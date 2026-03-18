@@ -21,16 +21,16 @@ from typing import Any, Callable, Optional
 
 # 导入 memory 模块
 from memory import (
-    format_memory_context,
+    # format_memory_context,
     get_memory_manager,
 )
 from sessions import (
     get_session_manager,
-    create_session,
-    add_user_message,
-    add_assistant_message,
-    add_tool_result,
-    format_conversation_for_llm,
+    # create_session,
+    # add_user_message,
+    # add_assistant_message,
+    # add_tool_result,
+    # format_conversation_for_llm,
 )
 
 
@@ -430,7 +430,7 @@ class AgenticLoop:
 
         # 获取 session 历史对话
         session_manager = get_session_manager()
-        conversation_history = session_manager.format_conversation_for_llm(max_messages=10)
+        conversation_history = session_manager.format_conversation_for_llm(max_messages=20)
 
         # 获取当前时间
         from datetime import datetime
@@ -783,7 +783,7 @@ MEMORY.md（只存重要事实和决定）：
 
         self.memory_manager.update_memory_file(file_name, final_content, append=False)
 
-        self.memory_manager.update_memory_file(file_name, final_content, append=False)
+        # self.memory_manager.update_memory_file(file_name, final_content, append=False)
 
     def _should_continue(self, iteration: int) -> bool:
         """

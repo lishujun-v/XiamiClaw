@@ -22,12 +22,12 @@ class MemoryManager:
         初始化记忆管理器
 
         Args:
-            memory_dir: memory 目录路径，默认为当前目录下的 memory 文件夹
+            memory_dir: memory 目录路径，默认为 workspace/memory 文件夹
         """
         if memory_dir is None:
-            # 默认使用当前目录下的 memory 文件夹
-            current_dir = Path(__file__).parent
-            memory_dir = current_dir
+            # 默认使用 workspace/memory 文件夹
+            current_dir = Path(__file__).parent.parent
+            memory_dir = current_dir / "workspace" / "memory"
 
         self.memory_dir = Path(memory_dir)
         self.agent_file = self.memory_dir / "AGENT.md"

@@ -14,7 +14,10 @@ class CustomLLM(BaseLLM):
         self,
         api_key: str = "sk-fc19155e-54de-475e-b259-5ea4ef8294ea_tool",
         base_url: str = "https://llm-model-api-test.baiying.com.cn",
-        model: str = "216224dc-465d-48d7-9aa2-2c177d7c2405",
+        model: str = "216224dc-465d-48d7-9aa2-2c177d7c2405",  # dp v32
+        # model: str = "doubao-seed-2-0-mini-260215",  # seed2.0-mini
+        # model: str = "0b43e386-3460-4e06-b631-c7a3df450aaf",  # kimi-k2.5
+
         session_id: str = "1-SHARE_TITLE",
         temperature: float = 0.7,
         max_tokens: int = 4096,
@@ -163,6 +166,8 @@ class CustomLLM(BaseLLM):
                         'content': content
                     }
             else:
+                with open('./workspace/llm_error_response.json', 'w', encoding='utf-8') as f:
+                    json.dump(result, f)
                 return {
                     'type': 'text',
                     'content': "错误：API 返回结果中没有有效内容"

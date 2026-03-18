@@ -38,13 +38,18 @@ class SessionMetadata:
 class SessionManager:
     """Session 管理器"""
 
-    def __init__(self, sessions_dir: str = "sessions"):
+    def __init__(self, sessions_dir: str = None):
         """
         初始化 Session 管理器
 
         Args:
-            sessions_dir: sessions 目录路径
+            sessions_dir: sessions 目录路径，默认为 workspace/sessions
         """
+        if sessions_dir is None:
+            # 默认使用 workspace/sessions 文件夹
+            current_dir = Path(__file__).parent.parent
+            sessions_dir = current_dir / "workspace" / "sessions"
+
         self.sessions_dir = Path(sessions_dir)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
 
@@ -310,7 +315,7 @@ class SessionManager:
 _session_manager: Optional[SessionManager] = None
 
 
-def get_session_manager(sessions_dir: str = "sessions") -> SessionManager:
+def get_session_manager(sessions_dir: str = None) -> SessionManager:
     """获取全局 Session 管理器实例"""
     global _session_manager
     if _session_manager is None:

@@ -48,9 +48,9 @@ def build_prompt(task_description: str, context: str = "") -> str:
     return base_prompt
 
 
-def call_llm(prompt: str) -> str:
+def call_llm(prompt: str, timeout: int = 120) -> str:
     """调用 LLM 生成报告内容"""
-    llm = CustomLLM()
+    llm = CustomLLM(timeout=timeout)
     result = llm.call(prompt=prompt)
 
     if result.get('type') == 'text':
@@ -96,6 +96,13 @@ def main():
         help='上下文/背景信息'
     )
 
+    parser.add_argument(
+        '--timeout',
+        type=int,
+        default=300,
+        help='LLM 调用超时时间（秒），默认 300'
+    )
+
     args = parser.parse_args()
 
     # 合并参数：位置参数和选项参数
@@ -109,7 +116,7 @@ def main():
 
     # 构建 prompt 并调用 LLM
     prompt = build_prompt(task_description, context)
-    report_content = call_llm(prompt)
+    report_content = call_llm(prompt, timeout=args.timeout)
 
     # 直接打印报告内容，作为大模型的上下文参考
     print(report_content)

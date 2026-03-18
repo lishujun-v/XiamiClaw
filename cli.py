@@ -12,17 +12,29 @@ import os
 import sys
 import argparse
 
+# 设置 UTF-8 编码
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# 尝试导入 prompt_toolkit，支持中文输入
-try:
-    from prompt_toolkit import PromptSession
-    from prompt_toolkit.input.default import create_input
-    from prompt_toolkit.keys import Keys
-    USE_PROMPT_TOOLKIT = True
-except ImportError:
-    USE_PROMPT_TOOLKIT = False
+# 获取终端宽度
+def get_terminal_width():
+    try:
+        return os.get_terminal_size().columns
+    except:
+        return 60
+
+
+# Unicode 框线字符
+def print_input_box(prompt=">", width=None):
+    """打印输入框上线，用户输入后会打印下线"""
+    if width is None:
+        width = get_terminal_width()
+
+    # 使用 Unicode 框线字符
+    print(f"╭{'─' * (width - 2)}╮")
+    print(f"│ {prompt} ", end="")
 
 
 def create_llm_provider():
@@ -51,23 +63,26 @@ def interactive_mode(agent):
     """交互模式"""
     print_welcome()
 
-    if USE_PROMPT_TOOLKIT:
-        # 使用 prompt_toolkit，支持中文
-        session = PromptSession(
-            "\n> ",
-            multiline=False,
-            enable_history_search=True,
-        )
-    else:
-        print("\n提示: 安装 prompt_toolkit 可获得更好的中文支持: pip install prompt_toolkit")
+    # 检查 readline 库
+    try:
+        import readline
+        # macOS 上可以安装 gnureadline 获得更好的中文支持
+        # 或者直接用系统自带的 readline
+    except ImportError:
+        pass
 
     while True:
         try:
-            print("*" * 40)
-            if USE_PROMPT_TOOLKIT:
-                user_input = session.prompt().strip()
-            else:
-                user_input = input("\nYOU >： ").strip()
+            # 打印输入框上线
+            width = get_terminal_width()
+            print(f"╭{'─' * (width - 2)}╮")
+            print(f"│ ", end="")
+
+            # 用户输入
+            user_input = input("> ").strip()
+
+            # 打印输入框下线
+            print(f"╰{'─' * (width - 2)}╯")
 
             if not user_input:
                 continue

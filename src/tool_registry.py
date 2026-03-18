@@ -36,8 +36,56 @@ class ToolRegistry:
         self._executors: dict[str, Callable] = {}
         self._register_builtin_tools()
 
+    def _get_tools_dir(self) -> str:
+        """获取 tools 目录路径"""
+        # 从项目根目录查找 tools 目录
+        current_file = os.path.abspath(__file__)
+        # src/tool_registry.py -> 项目根目录/tools
+        project_root = os.path.dirname(os.path.dirname(current_file))
+        tools_dir = os.path.join(project_root, "tools")
+        return tools_dir
+
+    def _register_tools_from_directory(self):
+        """从 tools 目录动态加载工具"""
+        tools_dir = self._get_tools_dir()
+
+        if not os.path.exists(tools_dir):
+            return
+
+        # 添加 tools 目录到 Python 路径
+        if tools_dir not in sys.path:
+            sys.path.insert(0, tools_dir)
+
+        for filename in os.listdir(tools_dir):
+            if filename.endswith(".py") and not filename.startswith("_"):
+                module_name = filename[:-3]  # 去掉 .py 后缀
+                tool_name = module_name  # 工具名就是文件名
+
+                # 跳过已注册的内置工具
+                if tool_name in self._tools:
+                    continue
+
+                try:
+                    # 动态导入模块
+                    spec = importlib.util.spec_from_file_location(module_name, os.path.join(tools_dir, filename))
+                    if spec and spec.loader:
+                        module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(module)
+
+                        # 检查模块是否导出工具定义和执行函数
+                        if hasattr(module, "TOOL_DEFINITION") and hasattr(module, "execute"):
+                            tool_def = module.TOOL_DEFINITION
+                            # 使用模块的文件名作为工具名
+                            tool_def.name = tool_name
+                            self.register(tool_def, module.execute)
+                            print(f"Loaded tool: {tool_name}")
+                except Exception as e:
+                    print(f"Failed to load tool {tool_name}: {e}")
+
     def _register_builtin_tools(self):
         """注册内置工具"""
+        # 先从 tools 目录加载工具
+        self._register_tools_from_directory()
         # Core Tools
         self.register(
             ToolDefinition(
@@ -146,6 +194,13 @@ class ToolRegistry:
 
         try:
             result = executor(args)
+            # 如果返回的是 dict，转换为 ToolResult
+            if isinstance(result, dict):
+                return ToolResult(
+                    success=result.get("success", False),
+                    content=result.get("content"),
+                    error=result.get("error")
+                )
             return result
         except Exception as e:
             return ToolResult(
@@ -254,7 +309,7 @@ class ToolRegistry:
         import subprocess
 
         command = args.get("command", "")
-        timeout = args.get("timeout", 30)
+        timeout = args.get("timeout", 300)
         background = args.get("background", False)
 
         try:

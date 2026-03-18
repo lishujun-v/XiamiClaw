@@ -4,7 +4,7 @@ Exec Tool - 执行沙盒命令行
 
 参数:
     command: 要执行的命令
-    timeout: 超时时间(秒，默认 30)
+    timeout: 超时时间(秒，默认 300)
     background: 是否在后台执行 (默认 False)
 """
 
@@ -24,14 +24,14 @@ def execute(command: str, timeout: Optional[int] = None, background: bool = Fals
 
     Args:
         command: 要执行的命令
-        timeout: 超时时间(秒，默认 30)
+        timeout: 超时时间(秒，默认 300)
         background: 是否在后台执行 (默认 False)
 
     Returns:
         dict: 包含 success 和 content/error
     """
     if timeout is None:
-        timeout = 30
+        timeout = 300
 
     try:
         if background:
@@ -105,8 +105,8 @@ def main():
 
     parser = argparse.ArgumentParser(description="执行沙盒命令行")
     parser.add_argument("command", help="要执行的命令")
-    parser.add_argument("--timeout", "-t", type=int, default=30,
-                        help="超时时间(秒，默认 30)")
+    parser.add_argument("--timeout", "-t", type=int, default=300,
+                        help="超时时间(秒，默认 300)")
     parser.add_argument("--background", "-b", dest="background", action="store_true",
                         help="是否在后台执行")
 

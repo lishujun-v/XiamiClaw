@@ -12,7 +12,7 @@ metadata: {"requires": {"python": true, "files": ["scripts/report_writer.py"]}}
 ## 调用脚本
 
 ```bash
-python skills/report_writer/scripts/report_writer.py --target "任务目标" --context "上下文信息"
+python skills/report_writer/scripts/report_writer.py -t "任务目标" -c "上下文信息" --timeout 300
 ```
 
 ### 参数说明
@@ -21,6 +21,7 @@ python skills/report_writer/scripts/report_writer.py --target "任务目标" --c
 |------|------|------|
 | `--target` / `-t` | 任务目标，要撰写什么内容的报告 | "做一个AI发展趋势相关的报告" |
 | `--context` / `-c` | 上下文/背景信息（可选） | "重点关注2024-2025年的技术突破" |
+| `--timeout` | LLM 调用超时时间（秒），默认 300 | 300 |
 
 ## 使用示例
 
