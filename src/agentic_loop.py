@@ -820,8 +820,8 @@ MEMORY.md（只存重要事实和决定）：
         Returns:
             最终响应
         """
-        if show_progress:
-            self._print_header("Agentic Loop 启动")
+        # if show_progress:
+        #     self._print_header("Agentic Loop 启动")
 
         # 初始化状态
         self.state = LoopState(start_time=time.time())
@@ -880,8 +880,8 @@ MEMORY.md（只存重要事实和决定）：
                 session_manager = get_session_manager()
                 session_manager.add_assistant_message(content=content)
 
-                if show_progress:
-                    self._print_final_response(content)
+                # if show_progress:
+                #     self._print_final_response(content)
 
                 # 自动保存记忆
                 self._auto_save_memory(user_message, content, show_progress)

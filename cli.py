@@ -63,10 +63,11 @@ def interactive_mode(agent):
 
     while True:
         try:
+            print("*" * 40)
             if USE_PROMPT_TOOLKIT:
                 user_input = session.prompt().strip()
             else:
-                user_input = input("\n> ").strip()
+                user_input = input("\nYOU >： ").strip()
 
             if not user_input:
                 continue
@@ -105,7 +106,7 @@ def interactive_mode(agent):
 
             # 执行请求
             response = agent.run(user_input)
-            print(f"\n{response}")
+            print(f"\nXiaMi > ： {response}\n")
 
         except KeyboardInterrupt:
             print("\n\nGoodbye!")
