@@ -8,7 +8,7 @@ from .base import BaseLLM
 
 
 class CustomLLM(BaseLLM):
-    """自定义 LLM API (白赢/百应模型)"""
+    """自定义 LLM API (百应模型)"""
 
     def __init__(
         self,
