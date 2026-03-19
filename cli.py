@@ -162,7 +162,7 @@ def main():
     parser.add_argument('message', nargs='?', help='要处理的消息')
     parser.add_argument('-i', '--interactive', action='store_true', help='交互模式')
     parser.add_argument('-s', '--show-prompt', action='store_true', help='显示 System Prompt')
-    parser.add_argument('--no-confirm', action='store_false', help='禁用危险工具执行前确认')
+    parser.add_argument('--no-confirm', action='store_true', help='禁用危险工具执行前确认')
 
     args = parser.parse_args()
 
