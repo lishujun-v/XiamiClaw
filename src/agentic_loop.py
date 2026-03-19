@@ -270,8 +270,8 @@ class AgenticLoop:
                     skill_name = skill_entry.skill.name if hasattr(skill_entry, 'skill') else None
                     if not skill_name:
                         continue
-                    skill_path = f"skills/{skill_name}/SKILL.md"
-                    if skill_path in path or f"skills/{skill_name}" in path:
+                    skill_path = f"workspace/skills/{skill_name}/SKILL.md"
+                    if skill_path in path or f"workspace/skills/{skill_name}" in path:
                         self._print_skill_load(skill_name)
                         content = self.skill_loader.get_skill_content(skill_name)
                         if content:
@@ -280,7 +280,7 @@ class AgenticLoop:
                 # 检查是否是读取其他 skill 相关文件
                 if "skill" in path.lower() or "SKILL" in path:
                     # 尝试提取 skill 名称
-                    match = re.search(r'(?:skills?[/\\]?|SKILL\.md[/\\]?)(\w+)', path, re.IGNORECASE)
+                    match = re.search(r'(?:workspace/skills?[/\\]?|skills?[/\\]?|SKILL\.md[/\\]?)(\w+)', path, re.IGNORECASE)
                     if match:
                         skill_name = match.group(1)
                         self._print_skill_load(skill_name)
@@ -646,13 +646,13 @@ Now, please help the user with their request.""")
                 if hasattr(skill_entry, 'skill'):
                     name = skill_entry.skill.name
                     description = skill_entry.skill.description
-                    location = f"skills/{name}/SKILL.md"
+                    location = f"workspace/skills/{name}/SKILL.md"
                 else:
                     # 备用方式
                     skill_dict = skill_entry if isinstance(skill_entry, dict) else {}
                     name = skill_dict.get('skill', {}).get('name', 'unknown')
                     description = skill_dict.get('skill', {}).get('description', '')
-                    location = f"skills/{name}/SKILL.md"
+                    location = f"workspace/skills/{name}/SKILL.md"
 
                 lines.append(f"""  <skill>
     <name>{name}</name>
