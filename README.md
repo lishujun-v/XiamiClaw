@@ -1,2 +1,122 @@
 # XiamiClaw
-自己针对openclaw的agent层进行复现的代码
+
+一个基于 Agent 架构的 AI 助手，支持多种大模型接入，可以执行工具调用、Skill 技能等任务。
+
+## 快速开始
+
+### 1. 克隆项目
+
+```bash
+git clone https://github.com/your-repo/XiamiClaw.git
+cd XiamiClaw
+```
+
+### 2. 安装依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+**注意**：macOS 用户推荐安装 `gnureadline` 以获得更好的中文输入体验：
+
+```bash
+pip install gnureadline
+```
+
+### 3. 配置模型
+
+编辑 `config.yaml` 文件，配置你使用的 LLM：
+
+```yaml
+# 选择模型提供商: deepseek / openai / anthropic / custom
+model_provider: deepseek
+
+# DeepSeek 配置
+deepseek:
+  api_key: "sk-你的API密钥"
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"  # 或 deepseek-coder
+
+# OpenAI 配置
+openai:
+  api_key: "sk-你的API密钥"
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-4o"
+
+# Anthropic (Claude) 配置
+anthropic:
+  api_key: "sk-ant-你的API密钥"
+  model: "claude-sonnet-4-20250514"
+
+# 自定义 API (百应) 配置
+custom:
+  api_key: "你的API密钥"
+  base_url: "https://你的API地址"
+  model: "模型ID"
+```
+
+### 4. 启动命令
+
+**交互模式**（会显示带框线的输入框）：
+
+```bash
+python cli.py
+```
+
+**单次执行**：
+
+```bash
+python cli.py "你好，请介绍一下自己"
+```
+
+**查看 System Prompt**：
+
+```bash
+python cli.py -s
+```
+
+## 使用说明
+
+### 交互模式命令
+
+- 输入消息开始对话
+- `exit` / `quit` / `q` - 退出程序
+- `skills` - 查看可用技能
+- `tools` - 查看可用工具
+- `clear` - 清屏
+- `prompt` - 显示当前 System Prompt
+
+### 配置文件说明
+
+`config.yaml` 中可配置的选项：
+
+```yaml
+# Agent 配置
+agent:
+  max_iterations: 100   # 最大循环次数
+  verbose: true         # 是否显示详细日志
+
+# CLI 配置
+cli:
+  welcome_message: "OpenClaw Agent"  # 欢迎信息
+  input_width: 0       # 输入框宽度，0 表示自动
+```
+
+## 项目结构
+
+```
+XiamiClaw/
+├── cli.py              # 命令行入口
+├── config.yaml         # 配置文件
+├── models/             # LLM 模型封装
+├── src/                # 核心代码
+├── tools/              # 工具集
+├── skills/             # 技能集
+├── utils/              # 工具函数
+└── workspace/         # 工作目录
+```
+
+## 环境要求
+
+- Python 3.10+
+- 支持的 LLM API：DeepSeek、OpenAI、Anthropic、百应等兼容 OpenAI API 格式的模型
