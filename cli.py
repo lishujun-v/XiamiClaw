@@ -121,7 +121,9 @@ def interactive_mode(agent):
 
             # 执行请求
             response = agent.run(user_input)
-            print(f"\nXiaMi > ： {response}\n")
+            print(f"╭{'─' * (width - 2)}╮")
+            print(f"    {response}")
+            print(f"╰{'─' * (width - 2)}╯")
 
         except KeyboardInterrupt:
             print("\n\nGoodbye!")

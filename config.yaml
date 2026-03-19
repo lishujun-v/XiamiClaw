@@ -1,0 +1,70 @@
+# OpenClaw 配置文件
+# 可以通过修改此文件来更改模型和其他设置
+
+# ============================================
+# LLM 模型配置
+# ============================================
+
+# 当前使用的模型类型: deepseek / openai / anthropic / custom
+model_provider: deepseek
+
+# DeepSeek 配置
+deepseek:
+  api_key: "sk-74086fecf7ee4d6f849474a66e1520b0"  # 替换为你的 DeepSeek API Key
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"  # deepseek-chat 或 deepseek-coder
+  temperature: 0.7
+  max_tokens: 4096
+  timeout: 600
+
+# OpenAI 配置 (如果你有 OpenAI API)
+openai:
+  api_key: "your-openai-api-key-here"
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-4o"
+  temperature: 0.7
+  max_tokens: 4096
+  timeout: 600
+
+# Anthropic (Claude) 配置
+anthropic:
+  api_key: "your-anthropic-api-key-here"
+  model: "claude-sonnet-4-20250514"
+  temperature: 0.7
+  max_tokens: 4096
+  timeout: 600
+
+# 自定义 API (百应) 配置
+custom:
+  api_key: "sk-fc19155e-54de-475e-b259-5ea4ef8294ea_tool"
+  base_url: "https://llm-model-api-test.baiying.com.cn"
+  model: ""  # 替换成自己的modi id
+  session_id: "1-SHARE_TITLE"
+  temperature: 0.7
+  max_tokens: 4096
+  timeout: 600
+
+# ============================================
+# Agent 配置
+# ============================================
+
+agent:
+  # 最大循环次数，防止无限循环
+  max_iterations: 100
+
+  # 是否显示详细日志
+  verbose: true
+
+  # System Prompt 文件路径
+  system_prompt_file: null  # null 表示使用默认
+
+# ============================================
+# CLI 配置
+# ============================================
+
+cli:
+  # 欢迎信息
+  welcome_message: "OpenClaw Agent"
+
+  # 输入框宽度 (0 表示自动检测终端宽度)
+  input_width: 0
