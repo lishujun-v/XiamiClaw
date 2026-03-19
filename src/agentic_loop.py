@@ -99,6 +99,7 @@ class AgenticLoop:
         enable_loop_detection: bool = True,
         loop_warning_threshold: int = 3,
         loop_max_threshold: int = 5,
+        confirm_dangerous_tools: bool = True,
     ):
         """
         初始化 Agentic Loop
@@ -125,6 +126,10 @@ class AgenticLoop:
         self.enable_loop_detection = enable_loop_detection
         self.loop_warning_threshold = loop_warning_threshold
         self.loop_max_threshold = loop_max_threshold
+        self.confirm_dangerous_tools = confirm_dangerous_tools
+
+        # 危险工具列表
+        self._dangerous_tools = {"exec", "write", "edit"}
 
         # 状态
         self.state = LoopState()
@@ -329,6 +334,10 @@ class AgenticLoop:
         if not self.tool_registry:
             return False, "", "工具注册表未初始化"
 
+        # 危险工具确认
+        if not self._confirm_dangerous_tool(tool_name, args):
+            return False, "", "用户取消执行"
+
         try:
             result = self.tool_registry.execute(tool_name, args)
             if result.success:
@@ -364,6 +373,63 @@ class AgenticLoop:
                 break
 
         return count >= self.loop_warning_threshold, count
+
+    def _confirm_dangerous_tool(self, tool_name: str, args: dict) -> bool:
+        """
+        确认危险工具执行
+
+        Args:
+            tool_name: 工具名称
+            args: 工具参数
+
+        Returns:
+            True 表示确认执行，False 表示取消
+        """
+        if not self.confirm_dangerous_tools:
+            return True
+
+        if tool_name not in self._dangerous_tools:
+            return True
+
+        # 构建确认信息
+        print(f"\n{Colors.YELLOW}{Colors.BOLD}⚠️  安全确认{Colors.RESET}")
+        print(f"{Colors.YELLOW}工具 `{tool_name}` 可能存在风险，请确认是否执行:{Colors.RESET}")
+
+        if tool_name == "exec":
+            command = args.get("command", "")
+            print(f"\n{Colors.RED}命令:{Colors.RESET}")
+            print(f"  {command}")
+        elif tool_name == "write":
+            file_path = args.get("file_path", "")
+            content = args.get("content", "")
+            print(f"\n{Colors.RED}文件路径:{Colors.RESET}")
+            print(f"  {file_path}")
+            print(f"\n{Colors.RED}内容预览 (前200字符):{Colors.RESET}")
+            print(f"  {content[:200]}...")
+        elif tool_name == "edit":
+            file_path = args.get("file_path", "")
+            old_string = args.get("old_string", "")
+            new_string = args.get("new_string", "")
+            print(f"\n{Colors.RED}文件路径:{Colors.RESET}")
+            print(f"  {file_path}")
+            print(f"\n{Colors.RED}将替换:{Colors.RESET}")
+            print(f"  {old_string[:100]}...")
+            print(f"\n{Colors.GREEN}替换为:{Colors.RESET}")
+            print(f"  {new_string[:100]}...")
+
+        print(f"\n{Colors.CYAN}请确认是否执行? [y/n]: {Colors.RESET}", end=" ")
+
+        try:
+            response = input().strip().lower()
+            if response in ["y", "yes", "是", "确认"]:
+                print(f"{Colors.GREEN}✓ 已确认，执行中...{Colors.RESET}")
+                return True
+            else:
+                print(f"{Colors.RED}✗ 已取消执行{Colors.RESET}")
+                return False
+        except (EOFError, KeyboardInterrupt):
+            print(f"\n{Colors.RED}✗ 已取消执行{Colors.RESET}")
+            return False
 
     def _call_llm(
         self,
@@ -1003,6 +1069,7 @@ def create_agentic_loop(
     llm_provider: Optional[Callable] = None,
     tool_registry: Optional[Any] = None,
     skill_loader: Optional[Any] = None,
+    confirm_dangerous_tools: bool = True,
     **kwargs
 ) -> AgenticLoop:
     """
@@ -1012,6 +1079,7 @@ def create_agentic_loop(
         llm_provider: LLM 提供者
         tool_registry: 工具注册表
         skill_loader: Skill 加载器
+        confirm_dangerous_tools: 是否在执行危险工具前确认 (默认 True)
         **kwargs: 其他参数
 
     Returns:
@@ -1021,6 +1089,7 @@ def create_agentic_loop(
         llm_provider=llm_provider,
         tool_registry=tool_registry,
         skill_loader=skill_loader,
+        confirm_dangerous_tools=confirm_dangerous_tools,
         **kwargs
     )
 
@@ -1032,6 +1101,7 @@ def run_agentic_loop(
     tool_registry: Optional[Any] = None,
     skill_loader: Optional[Any] = None,
     show_progress: bool = True,
+    confirm_dangerous_tools: bool = True,
     **kwargs
 ) -> str:
     """
@@ -1043,6 +1113,7 @@ def run_agentic_loop(
         tool_registry: 工具注册表
         skill_loader: Skill 加载器
         show_progress: 是否显示进度
+        confirm_dangerous_tools: 是否在执行危险工具前确认 (默认 True)
         **kwargs: 其他参数
 
     Returns:
@@ -1052,6 +1123,7 @@ def run_agentic_loop(
         llm_provider=llm_provider,
         tool_registry=tool_registry,
         skill_loader=skill_loader,
+        confirm_dangerous_tools=confirm_dangerous_tools,
         **kwargs
     )
 

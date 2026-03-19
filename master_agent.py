@@ -32,6 +32,7 @@ class MasterAgent:
         skill_loader: Optional[SkillLoader] = None,
         max_iterations: int = 10,
         show_progress: bool = True,
+        confirm_dangerous_tools: bool = True,
     ):
         """
         初始化 Master Agent
@@ -42,6 +43,7 @@ class MasterAgent:
             skill_loader: Skill 加载器
             max_iterations: 最大迭代次数
             show_progress: 是否显示执行进度
+            confirm_dangerous_tools: 是否在执行危险工具前确认 (默认 True)
         """
         # 默认 LLM 提供者
         if llm_provider is None:
@@ -50,6 +52,7 @@ class MasterAgent:
         self.llm_provider = llm_provider
         self.show_progress = show_progress
         self.max_iterations = max_iterations
+        self.confirm_dangerous_tools = confirm_dangerous_tools
 
         # 初始化组件
         self.tool_registry = tool_registry or self._create_tool_registry()
@@ -63,6 +66,7 @@ class MasterAgent:
             tool_registry=self.tool_registry,
             skill_loader=self.skill_loader,
             max_iterations=max_iterations,
+            confirm_dangerous_tools=confirm_dangerous_tools,
         )
 
     def _default_llm_provider(self, messages, tools=None, **kwargs):
@@ -125,6 +129,7 @@ class MasterAgent:
 def create_agent(
     max_iterations: int = 10,
     show_progress: bool = True,
+    confirm_dangerous_tools: bool = True,
 ) -> MasterAgent:
     """
     创建 Master Agent 的便捷函数
@@ -132,6 +137,7 @@ def create_agent(
     Args:
         max_iterations: 最大迭代次数
         show_progress: 是否显示进度
+        confirm_dangerous_tools: 是否在执行危险工具前确认 (默认 True)
 
     Returns:
         MasterAgent 实例
@@ -139,6 +145,7 @@ def create_agent(
     return MasterAgent(
         max_iterations=max_iterations,
         show_progress=show_progress,
+        confirm_dangerous_tools=confirm_dangerous_tools,
     )
 
 
@@ -148,10 +155,12 @@ def interactive_mode(agent: MasterAgent):
     print("  OpenClaw Agent - Interactive Mode")
     print("=" * 60)
     print("  输入消息开始对话")
-    print("  输入 'exit' 或 'quit' 退出")
-    print("  输入 'skills' 查看可用技能")
-    print("  输入 'tools' 查看可用工具")
-    print("  输入 'prompt' 查看系统提示")
+    print("  输入 '/exit' 或 '/quit' 退出")
+    print("  输入 '/skills' 查看可用技能")
+    print("  输入 '/tools' 查看可用工具")
+    print("  输入 '/prompt' 查看系统提示")
+    print("  输入 '/clear' 清屏")
+    print("  输入 '/session' 创建新 session（清除历史）")
     print("=" * 60)
 
     while True:
@@ -161,23 +170,54 @@ def interactive_mode(agent: MasterAgent):
             if not user_input:
                 continue
 
+            # 检查斜杠命令
+            if user_input.startswith('/'):
+                cmd = user_input[1:].lower()
+
+                if cmd in ['exit', 'quit', 'q']:
+                    print("Goodbye!")
+                    break
+
+                if cmd == 'skills':
+                    agent.list_skills()
+                    continue
+
+                if cmd == 'tools':
+                    agent.list_tools()
+                    continue
+
+                if cmd == 'prompt':
+                    print("\n=== System Prompt ===")
+                    print(agent.get_system_prompt()[:2000])
+                    print("...(truncated)")
+                    continue
+
+                if cmd == 'clear':
+                    import os
+                    os.system('cls' if os.name == 'nt' else 'clear')
+                    print("=" * 60)
+                    print("  OpenClaw Agent - Interactive Mode")
+                    print("=" * 60)
+                    continue
+
+                if cmd == 'session':
+                    # 创建新 session，清除历史对话
+                    from sessions import get_session_manager
+                    session_manager = get_session_manager()
+                    new_session_id = session_manager.create_session(force_new=True)
+                    print(f"\n✓ 已创建新 Session: {new_session_id}")
+                    print("  下次对话将不携带历史记录")
+                    continue
+
+                # 未知命令
+                print(f"未知命令: {cmd}")
+                print("可用命令: /exit, /quit, /skills, /tools, /clear, /prompt, /session")
+                continue
+
+            # 检查不带斜杠的退出命令（兼容）
             if user_input.lower() in ['exit', 'quit', 'q']:
                 print("Goodbye!")
                 break
-
-            if user_input.lower() == 'skills':
-                agent.list_skills()
-                continue
-
-            if user_input.lower() == 'tools':
-                agent.list_tools()
-                continue
-
-            if user_input.lower() == 'prompt':
-                print("\n=== System Prompt ===")
-                print(agent.get_system_prompt()[:2000])
-                print("...(truncated)")
-                continue
 
             # 执行请求
             response = agent.run(user_input)
@@ -198,12 +238,16 @@ def main():
     parser.add_argument('-i', '--interactive', action='store_true', help='交互模式')
     parser.add_argument('-s', '--show-prompt', action='store_true', help='显示 System Prompt')
     parser.add_argument('--max-iterations', type=int, default=10, help='最大迭代次数')
+    parser.add_argument('--no-confirm', action='store_true', help='禁用危险工具执行前确认')
 
     args = parser.parse_args()
 
     # 创建 Agent
     print("Initializing OpenClaw Agent...")
-    agent = create_agent(max_iterations=args.max_iterations)
+    agent = create_agent(
+        max_iterations=args.max_iterations,
+        confirm_dangerous_tools=not args.no_confirm
+    )
     agent.print_welcome()
 
     if args.show_prompt:
