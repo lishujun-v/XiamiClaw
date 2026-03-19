@@ -80,11 +80,43 @@ python cli.py -s
 ### 交互模式命令
 
 - 输入消息开始对话
-- `exit` / `quit` / `q` - 退出程序
-- `skills` - 查看可用技能
-- `tools` - 查看可用工具
-- `clear` - 清屏
-- `prompt` - 显示当前 System Prompt
+- `/exit` / `/quit` / `/q` - 退出程序
+- `/skills` - 查看可用技能
+- `/tools` - 查看可用工具
+- `/clear` - 清屏
+- `/prompt` - 显示当前 System Prompt
+- `/session` - 创建新 session（清除历史对话）
+
+### 命令行参数
+
+```bash
+# 交互模式
+python cli.py -i
+
+# 单次执行
+python cli.py "你的消息"
+
+# 显示 System Prompt
+python cli.py -s
+
+# 禁用危险工具执行前确认
+python cli.py -i --no-confirm
+
+# 指定最大迭代次数
+python cli.py "你的消息" --max-iterations 5
+
+# 查看帮助
+python cli.py -h
+```
+
+**参数说明：**
+
+| 参数 | 说明 |
+|------|------|
+| `-i`, `--interactive` | 交互模式 |
+| `-s`, `--show-prompt` | 显示 System Prompt |
+| `--no-confirm` | 禁用危险工具（exec/write/edit）执行前确认 |
+| `--max-iterations` | 最大迭代次数（默认 10） |
 
 ### 配置文件说明
 
