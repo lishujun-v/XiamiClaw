@@ -30,7 +30,7 @@ class SkillEntry:
 class SkillLoader:
     """Skill 加载器"""
 
-    def __init__(self, skills_dir: str = "skills"):
+    def __init__(self, skills_dir: str = "workspace/skills"):
         self.skills_dir = skills_dir
         self._skills: list[SkillEntry] = []
         self._loaded: set[str] = set()  # 已加载的 skill 内容
