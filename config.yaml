@@ -47,7 +47,7 @@ minimax:
 
 # 自定义 API (百应) 配置
 custom:
-  api_key: "sk-fc19155e-54de-475e-b259-5ea4ef8294ea_tool"
+  api_key: ""
   base_url: "https://llm-model-api-test.baiying.com.cn"
   model: "doubao-seed-2-0-pro-260215"  # 替换成自己的modi id
   session_id: "1-SHARE_TITLE"
