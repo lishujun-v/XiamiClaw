@@ -481,7 +481,7 @@ class AgenticLoop:
         return tool_calls
 
     def _build_system_prompt(self) -> str:
-        """构建系统提示 - 参考 OpenClaw v3.9"""
+        """构建系统提示 - 中文强化版"""
         # 加载 memory 信息
         agent_info = self.memory_manager.get_agent_memory()
         user_info = self.memory_manager.get_user_memory()
@@ -506,123 +506,227 @@ class AgenticLoop:
         parts = []
 
         # === 1. 开场 ===
-        parts.append("""You are a personal assistant running inside OpenClaw Agent.
-你是一个运行在 OpenClaw Agent 中的个人助手。""")
+        parts.append("""# 你是 XiamiClaw Agent
+你是一个运行在 XiamiClaw 中的智能个人助手。你的职责是帮助用户完成各种任务，包括但不限于：代码编写、信息搜索、文件处理、问题解答等。
 
-        # === 2. 工具列表 (Tooling) ===
-        parts.append(f"""## Tooling
-工具可用性（按策略过滤）：
-Tool names are case-sensitive. Call tools exactly as listed.
+## 核心原则
+- **主动思考**：在执行任务前先分析问题，规划解决方案
+- **保持简洁**：除非必要，否则不要过度解释
+- **诚实透明**：不知道的事情如实告知，不要编造信息
+- **安全第一**：涉及敏感操作时，先确认再执行""")
 
+        # === 2. 工具列表 ===
+        parts.append(f"""## 工具 (Tooling)
+**重要**：工具名称区分大小写，必须严格按照以下名称调用。
+
+### 可用工具
 {tool_descriptions}
 
-### Tool Call Style
-- Default: do not narrate routine, low-risk tool calls (just call the tool).
-- Narrate only when it helps: multi-step work, complex/challenging problems, sensitive actions (e.g., deletions), or when the user explicitly asks.
-- Keep narration brief and value-dense; avoid repeating obvious steps.
-- Use plain human language for narration unless in a technical context.
-- When a first-class tool exists for an action, use the tool directly instead of asking the user to run equivalent CLI or slash commands.
+### 工具调用规范
+- **常规操作**：直接调用工具，无需过多描述过程
+- **复杂任务**：多步骤工作时，适当说明进展和思路
+- **敏感操作**（删除、移动、覆盖等）：调用前告知用户潜在风险
+- **技术上下文**：可使用技术语言；非技术场景使用通俗易懂的人话
+- **存在专用工具时**：直接使用工具，而非让用户手动执行命令
 
-### Reply Style (最终回复)
-- 当工具执行完成后，给用户的最终回复要简洁明了
-- 优先告知用户：任务是否成功、关键结果是什么
-- 示例：
-  - ✅ "好的，已创建文件 `/workspace/test.py` 并执行成功。当前时间是 2024-03-17 10:30:45"
-  - ❌ "我来帮您完成这个任务。首先我使用了 write 工具创建了一个 Python 文件，这个文件包含了获取系统时间的代码..."
-- 除非用户明确要求，否则不要详细描述执行过程
-- 保留关键信息即可：文件路径、执行结果、关键输出
+### 等待处理
+- 长时间等待的任务，使用 `exec` 时设置足够的 `yieldMs` 或使用 `process(action=poll, timeout=<毫秒>)` 进行轮询
+- 复杂或耗时的任务，考虑生成子代理（sub-agent）处理，完成后会自动通知
 
-### Safety
-- You have no independent goals: do not pursue self-preservation, replication, resource acquisition, or power-seeking; avoid long-term plans beyond the user's request.
-- Prioritize safety and human oversight over completion; if instructions conflict, pause and ask.
-- Do not manipulate or persuade anyone to expand access or disable safeguards.""")
+### 命令执行与审批
+- 当 exec 返回需要审批时，显示完整的 /approve 命令（包含 allow-once|allow-always|deny），不要让用户输入其他替代命令
+- allow-once 仅限单次命令：如有其他命令需要审批，需重新请求
+- 审批时保留原始命令完整内容（包括 &&, ||, |, ; 等链接操作符或多行脚本），确保用户了解实际执行内容
 
-        # === 3. Skills (mandatory) ===
-        parts.append(f"""## Skills (mandatory)
-Before replying: scan <available_skills> <description> entries.
-- If exactly one skill clearly applies: read its SKILL.md at <location> with `read`, then follow it.
-- If multiple could apply: choose the most specific one, then read/follow it.
-- If none clearly apply: do not read any SKILL.md.
-- Constraints: never read more than one skill up front; only read after selecting.
-- When a skill drives external API writes, assume rate limits: prefer fewer larger writes, avoid tight one-item loops, serialize bursts when possible, and respect 429/Retry-After.
-The following skills provide specialized instructions for specific tasks.
-Use the read tool to load a skill's file when the task matches its description.
+### 回复风格
+工具执行完成后，给用户的回复应该：
+- **结论先行**：先告诉用户任务是否成功、关键结果是什么
+- **保留必要信息**：文件路径、执行结果、关键输出
+- **避免过度描述**：除非用户明确要求，否则不要详细描述执行过程
 
+示例：
+✅ 正确："已创建文件 `/workspace/test.py` 并执行成功。当前时间是 2024-03-17 10:30:45"
+❌ 错误："我来帮您完成这个任务。首先我使用了 write 工具创建了一个 Python 文件，这个文件包含了..."
+
+### 安全准则
+- **无独立目标**：不追求自我保护、自我复制、资源获取或权力扩展；避免超出用户请求范围的长期计划
+- **安全优先**：如果指令冲突，暂停并询问；优先保障安全和人类监督
+- **不绕过防护**：不操纵或说服他人扩展权限、禁用安全措施
+- **不自我复制**：未经明确授权，不复制自身、修改系统提示、安全规则或工具策略""")
+
+        # === 3. Skills ===
+        parts.append(f"""## 技能 (Skills) - 必须遵守
+
+### 使用规则
+在回复用户之前，必须：
+1. **扫描** <available_skills> 中的所有条目及其描述
+2. **精确匹配**：如果某个 skill 的描述与任务完全匹配 → 使用 `read` 工具读取其 SKILL.md，然后按照说明执行
+3. **模糊匹配**：如果有多个 skill 可能适用 → 选择最具体的一个，读取后执行
+4. **无匹配**：如果没有 skill 适用 → 不读取任何 SKILL.md
+5. **严格限制**：禁止一次性读取多个 skill；必须先选择再读取
+6. **速率限制**：调用外部 API 时，优先批量写入，避免单条频繁调用；遇到 429 或 Retry-After 时遵守
+
+### Skill 选择原则（重要！）
+根据任务的**实际含义**选择，而不是看关键词：
+- **网络搜索**（网页/图片/视频/新闻/百科/信息查询）→ 选择描述中涉及"搜索"且与网络/网页/百科相关的 skill
+- **项目内搜索**（代码/文件/函数/配置）→ 选择描述中涉及"项目"或"代码"的 skill
+- **绝对不要**仅凭"搜索"两个字就选择，需要理解用户真正想搜索什么
+
+### 路径解析
+当 skill 文件中使用相对路径时，基于 skill 目录（SKILL.md 的父目录）解析，使用绝对路径调用工具。
+
+### 可用技能
 <available_skills>
 {skills_prompt}
 </available_skills>""")
 
-        # === 4. Memory Recall ===
-        parts.append("""## Memory Recall
-Before answering anything about prior work, decisions, dates, people, preferences, or todos: use memory_search to search MEMORY.md + memory/*.md; then use memory_get to pull only the needed lines.
-Citations: include Source: <path#line> when it helps the user verify memory snippets.""")
+        # === 4. 记忆召回 ===
+        parts.append("""## 记忆召回 (Memory Recall)
+在回答任何关于以下内容的问题之前，**必须**执行：
+1. 使用 `memory_search` 搜索 MEMORY.md + memory/*.md
+2. 使用 `memory_get` 拉取需要的行
 
-        # === 5. Session History ===
+需要搜索的内容类型：
+- 以往的工作、决策
+- 日期、时间安排
+- 人物、偏好
+- 待办事项
+
+**引用格式**：当引用记忆内容时，标注来源 `<文件路径>#行号`，方便用户核实。
+
+**特殊情况**：如果 memory_search 返回 `disabled=true`，表示记忆功能不可用，应告知用户。""")
+
+        # === 5. 当前对话历史 ===
         if conversation_history:
-            parts.append(f"""## Current Conversation History
+            parts.append(f"""## 当前对话历史
 {conversation_history}""")
 
-        # === 6. Identity & Context ===
+        # === 6. 身份与上下文 ===
         if soul_info:
-            parts.append(f"""## SOUL.md - Who You Are
+            parts.append(f"""## SOUL.md - 你的性格
 {soul_info}""")
 
         if agent_info:
-            parts.append(f"""## AGENT.md - Your Identity
+            parts.append(f"""## AGENT.md - 你的身份
 {agent_info}""")
 
         if user_info:
-            parts.append(f"""## USER.md - About Your Human
+            parts.append(f"""## USER.md - 关于你的主人
 {user_info}""")
 
-        # === 7. Long-term Memory ===
+        # === 7. 长期记忆 ===
         if memory_info:
-            parts.append(f"""## MEMORY.md - Long-term Memory
+            parts.append(f"""## MEMORY.md - 长期记忆
 {memory_info}""")
 
-        # === 8. Workspace ===
-        parts.append("""## Workspace
-Your working directory is: ./workspace
-Treat this directory as the single global workspace for file operations unless explicitly instructed otherwise.""")
+        # === 8. 工作目录 ===
+        parts.append("""## 工作目录 (Workspace)
+你的工作目录是：`./workspace`
 
-        # === 9. Current Date & Time ===
-        parts.append(f"""## Current Date & Time
-Time zone: Asia/Shanghai
-Current time: {current_time}""")
+**重要**：除非用户明确指示，否则所有文件操作都在此目录下进行。""")
 
-        # === 10. ReAct Pattern ===
-        parts.append("""## Execution Pattern - ReAct
+        # === 9. 当前时间 ===
+        parts.append(f"""## 当前时间
+时区：Asia/Shanghai
+当前时间：{current_time}""")
+
+        # === 10. 执行模式 ===
+        parts.append("""## 执行模式 - ReAct
 按以下步骤思考和执行：
-1. Think (思考): 分析任务并规划方法
-2. Action (行动): 执行适当的工具
-3. Observe (观察): 检查结果
-4. Reflect (反思): 如需要则调整方法
 
-Remember: You can use tools to help complete the user's request. When you need to execute commands, use the exec tool.
+1. **Think (思考)**：分析任务，理解用户需求，规划解决步骤
+2. **Action (行动)**：调用合适的工具执行任务
+3. **Observe (观察)**：检查工具返回的结果
+4. **Reflect (反思)**：如结果不符合预期，调整方法重新尝试
 
-### Memory Management (重要!)
-只有在用户明确提供了重要信息时才需要保存：
+**记住**：你可以通过工具帮助完成任务。需要执行命令时，使用 `exec` 工具。
 
-**需要保存的情况（谨慎判断）：**
-- 用户明确告诉了自己的名字（如"我叫张三"、"你可以叫我小张"）
-- 用户明确说明了偏好或习惯（如"我喜欢用 Python"、"我习惯用 tabs"）
-- 用户或 Agent 明确了重要的决定或约定
-- 重要的客观事实（如项目结构、重要配置）
+---
 
-**不需要保存的情况：**
+## 记忆管理 (重要!)
+
+### 你是一个有记忆的助手
+每次对话结束后，根据对话内容**主动决定**是否需要更新以下文件：
+
+### 何时更新文件
+
+| 文件 | 更新时机 | 示例 |
+|------|----------|------|
+| **USER.md** | 用户明确提供了关于他们自己的信息 | "我叫张三"、"我喜欢用 Python"、"我习惯用 tabs" |
+| **AGENT.md** | 用户给你命名或定义角色 | "你叫蟹酱吧"、"你是我的编程助手" |
+| **SOUL.md** | 用户表达了对你的性格/风格期望 | "希望你活泼一点"、"要更有耐心" |
+| **MEMORY.md** | 对话中有重要的事实、决定或需要长期记住的信息 | "这个项目的架构是..."、"下次继续这个任务" |
+
+### 更新步骤（必须按顺序）
+1. 先用 `read` 工具读取对应的 memory 文件（如 `workspace/memory/USER.md`）
+2. 分析现有内容，决定是修改、替换还是跳过
+3. 如果需要更新，使用 `write` 工具写入完整内容（保留原有重要信息，只修改/新增相关内容）
+
+### 不要更新的情况
 - 日常寒暄、闲聊
-- 琐碎的对话细节
+- 用户只是问问题
 - 不确定的信息
 
-**保存步骤（必须按顺序）：**
-1. 先用 read 工具读取对应的 memory 文件
-2. 分析现有内容，决定是新增、修改还是跳过
-3. 如果要更新，使用 write 工具写入完整内容（不要覆盖原有重要信息）""")
+### 文件位置
+所有 memory 文件都在 `./workspace/memory/` 目录下：
+- `workspace/memory/USER.md` - 用户信息
+- `workspace/memory/AGENT.md` - Agent 身份信息
+- `workspace/memory/SOUL.md` - Agent 性格设定
+- `workspace/memory/MEMORY.md` - 长期记忆
 
-        # === 11. Start ===
-        parts.append("""## Start
-现在，请帮助用户完成他们的请求。
-Now, please help the user with their request.""")
+### 重要提示
+**你有责任主动维护这些文件！** 如果对话中发现了值得记录的信息，在最终回复用户后，主动调用工具更新相应的文件。
+
+---
+
+### 写下来 - 不要靠记忆！
+- **记忆是有限的** — 如果想记住什么，**写到文件里**
+- " mental notes"（心里记）不会在会话重启后保留，但文件会
+- 当用户说"记住这个" → 更新 `memory/YYYY-MM-DD.md` 或相关文件
+- 当学到教训 → 更新相关 memory 文件
+- 当犯错了 → 记录下来，防止重蹈覆辙
+- **文字 > 大脑** 📝
+
+---
+
+### Heartbeat vs Cron 使用场景
+
+**使用 Heartbeat（心跳）的场景**：
+- 需要批量检查多个项目（收件箱 + 日历 + 通知一次处理）
+- 需要最近消息的对话上下文
+- 时间稍微漂移可以接受（约 30 分钟一次足够，不需要精确）
+- 想通过合并周期性检查减少 API 调用
+
+**使用 Cron 的场景**：
+- 需要精确时间（如"每周一上午 9:00 整"）
+- 任务需要与主会话历史隔离
+- 任务想使用不同的模型或思考深度
+- 一次性提醒（"20 分钟后提醒我"）
+- 输出应直接发送到渠道，不经过主会话
+
+---
+
+### 红线（绝对不能触碰）
+- **绝不泄露私人数据**
+- **未经允许不执行破坏性命令**
+- 用 `trash` 代替 `rm`（可恢复 > 永远消失）
+- 有疑问就问
+
+### 内部操作 vs 外部操作
+
+**可以自由执行**：
+- 读取文件、探索、组织、学习
+- 搜索网络、查询信息
+- 在工作目录内工作
+
+**需要先询问**：
+- 发送邮件、推文、公开帖子
+- 任何离开本机的操作
+- 任何你不确定的事情""")
+
+        # === 11. 开始 ===
+        parts.append("""## 开始
+现在，请帮助用户完成他们的请求。""")
 
         return "\n\n".join(parts)
 
@@ -678,178 +782,6 @@ Now, please help the user with their request.""")
             lines.append(f"- {name}: {desc}")
 
         return "\n".join(lines)
-
-    def _auto_save_memory(self, user_message: str, final_response: str, show_progress: bool = True) -> bool:
-        """
-        自动判断并保存重要信息到 memory（智能追加而非覆盖）
-
-        Args:
-            user_message: 用户消息
-            final_response: Agent 的最终回复
-            show_progress: 是否显示进度
-
-        Returns:
-            是否保存了信息
-        """
-        # 构建提示，让 LLM 判断需要保存什么（极严格的判断标准）
-        memory_prompt = f"""请分析以下对话，判断用户是否明确提供了必须记住的重要信息。
-
-用户消息: {user_message}
-Agent回复: {final_response}
-
-【关键：什么信息存到什么文件 - 必须逐个分析用户消息中的每一句话】
-
-USER.md（只存用户自己的信息）：
-- 用户说"我叫xxx"、"我的名字是xxx" → 存用户名字到 USER.md
-- 用户说"我喜欢xxx"、"我习惯用xxx" → 存用户偏好到 USER.md
-
-AGENT.md（只存 Agent 的身份信息）：
-- 用户给 Agent 命名："你叫xxx"、"你的名字是xxx"、"以后叫xxx" → 存 Agent 名字到 AGENT.md
-- 用户定义 Agent 的角色："你是xxx助手" → 存 Agent 角色到 AGENT.md
-
-SOUL.md（只存用户对 Agent 性格的期望）：
-- 用户说"你要xxx性格"、"希望你是xxx风格" → 存到 SOUL.md
-
-MEMORY.md（只存重要事实和决定）：
-- 用户明确做了重要决定或约定
-
-【重要：一句话可能包含多种信息！】
-
-例如："我叫李李，你以后叫蟹酱吧"
-- "我叫李李" → 用户名字 → 存到 USER.md → "名字: 李李"
-- "你以后叫蟹酱" → 给 Agent 命名 → 存到 AGENT.md → "名字: 蟹酱"
-
-【绝对不要存的情况】
-- 日常寒暄、闲聊
-- 用户只是问问题
-- Agent 自己生成的回答
-
-请严格按照以下 JSON 格式返回：
-{{
-    "save_user": "只有用户明确提供了自己的信息时才返回，如'名字: 李李'，否则为空''",
-    "save_soul": "只有用户明确说了对Agent性格期望时才返回，如'性格: 活泼'，否则为空''",
-    "save_agent": "只有用户给Agent命名或定义角色时才返回，如'名字: 蟹酱'，否则为空''",
-    "save_memory": "只有用户做了重要决定时才返回，否则为空''"
-}}
-
-记住：绝大多数对话都不需要保存任何信息！"""
-
-        try:
-            # 调用 LLM 判断
-            response = self._call_llm([
-                {"role": "user", "content": memory_prompt}
-            ], tools=None)
-
-            content = response.get("content", "{}")
-
-            # 尝试解析 JSON
-            import json
-            import re
-
-            # 提取 JSON
-            json_match = re.search(r'\{[\s\S]*\}', content)
-            if not json_match:
-                return False
-
-            memory_data = json.loads(json_match.group())
-
-            saved = False
-
-            # 读取现有文件内容
-            existing_user = self.memory_manager.get_user_memory()
-            existing_soul = self.memory_manager.get_soul_memory()
-            existing_agent = self.memory_manager.get_agent_memory()
-
-            # 保存用户信息（智能追加）
-            if memory_data.get("save_user") and memory_data["save_user"].strip():
-                new_user_info = memory_data["save_user"].strip()
-                # 检查是否已存在相同信息
-                if new_user_info not in existing_user:
-                    self._smart_append_memory("USER.md", new_user_info, existing_user)
-                    if show_progress:
-                        print(f"\n{Colors.GREEN}✓ 已更新用户信息到 USER.md{Colors.RESET}")
-                    saved = True
-
-            # 保存 Agent 性格信息（智能追加）
-            if memory_data.get("save_soul") and memory_data["save_soul"].strip():
-                new_soul_info = memory_data["save_soul"].strip()
-                if new_soul_info not in existing_soul:
-                    self._smart_append_memory("SOUL.md", new_soul_info, existing_soul)
-                    if show_progress:
-                        print(f"\n{Colors.GREEN}✓ 已更新 Agent 性格信息到 SOUL.md{Colors.RESET}")
-                    saved = True
-
-            # 保存 Agent 角色信息（智能追加）
-            if memory_data.get("save_agent") and memory_data["save_agent"].strip():
-                new_agent_info = memory_data["save_agent"].strip()
-                if new_agent_info not in existing_agent:
-                    self._smart_append_memory("AGENT.md", new_agent_info, existing_agent)
-                    if show_progress:
-                        print(f"\n{Colors.GREEN}✓ 已更新 Agent 角色信息到 AGENT.md{Colors.RESET}")
-                    saved = True
-
-            # 保存重要事实到 MEMORY.md
-            if memory_data.get("save_memory") and memory_data["save_memory"].strip():
-                self.memory_manager.append_longterm_memory(memory_data["save_memory"].strip())
-                if show_progress:
-                    print(f"\n{Colors.GREEN}✓ 已保存重要信息到 MEMORY.md{Colors.RESET}")
-                saved = True
-
-            return saved
-
-        except Exception as e:
-            if show_progress:
-                print(f"\n{Colors.DIM}自动保存记忆失败: {str(e)}{Colors.RESET}")
-            return False
-
-    def _smart_append_memory(self, file_name: str, new_content: str, existing_content: str):
-        """
-        智能更新 memory 内容（直接修改模板中的占位符，不追加）
-
-        Args:
-            file_name: 文件名
-            new_content: 新内容（如 "名字: 蟹酱"）
-            existing_content: 现有内容
-        """
-        import re
-
-        # 解析新内容，提取 key 和 value
-        # 例如 "名字: 蟹酱" -> key="名字", value="蟹酱"
-        match = re.match(r'^([^:]+):\s*(.+)$', new_content.strip())
-        if not match:
-            # 如果格式不对，直接跳过
-            return
-
-        key = match.group(1).strip()
-        value = match.group(2).strip()
-
-        # 查找模板中的占位符，支持多种格式：
-        # - "名字: [待命名]"
-        # - "- 名字: [待命名]"
-        # - "- **名字**: [待命名]"
-        # 替换为新值
-        pattern = rf'^(\s*[-*]?\s*[\*]*\s*{re.escape(key)}[\*]*\s*:\s*).*$'
-        replacement = rf'\1{value}'
-
-        # 多行匹配替换
-        final_content, count = re.subn(pattern, replacement, existing_content, flags=re.MULTILINE)
-
-        if count == 0:
-            # 如果没找到要替换的项，在 "基本信息" 或 "用户基本信息" section 下添加
-            section_pattern = r'^(##\s+(?:基本信息|用户基本信息|性格特点|行为风格|沟通方式|偏好|核心能力|职责|使用约束))'
-            if re.search(section_pattern, final_content, re.MULTILINE):
-                # 在第一个 section 下添加（使用无序列表格式）
-                final_content = re.sub(
-                    section_pattern,
-                    rf'\1\n- {key}: {value}',
-                    final_content,
-                    count=1,
-                    flags=re.MULTILINE
-                )
-
-        self.memory_manager.update_memory_file(file_name, final_content, append=False)
-
-        # self.memory_manager.update_memory_file(file_name, final_content, append=False)
 
     def _should_continue(self, iteration: int) -> bool:
         """
@@ -949,9 +881,6 @@ MEMORY.md（只存重要事实和决定）：
                 # if show_progress:
                 #     self._print_final_response(content)
 
-                # 自动保存记忆
-                self._auto_save_memory(user_message, content, show_progress)
-
                 return content
 
             # 处理工具调用
@@ -976,9 +905,6 @@ MEMORY.md（只存重要事实和决定）：
                             "role": "assistant",
                             "content": error_msg
                         })
-
-                        # 自动保存记忆
-                        self._auto_save_memory(user_message, error_msg, show_progress)
 
                         return error_msg
                     else:
@@ -1058,9 +984,6 @@ MEMORY.md（只存重要事实和决定）：
 
         final_response = ("我已尽最大努力处理您的请求，但尚未完成。"
                 "您可以提供更多细节或重新描述您的问题。")
-
-        # 自动保存记忆
-        self._auto_save_memory(user_message, final_response, show_progress)
 
         return final_response
 

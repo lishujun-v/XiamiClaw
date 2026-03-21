@@ -5,12 +5,13 @@
 # LLM 模型配置
 # ============================================
 
-# 当前使用的模型类型: deepseek / openai / anthropic / custom
-model_provider: deepseek
+# 当前使用的模型类型: deepseek / openai / anthropic / minimax / custom
+model_provider: minimax
 
 # DeepSeek 配置
 deepseek:
-  api_key: ""  # 替换为你的 DeepSeek API Key
+  # api_key: "sk-74086fecf7ee4d6f849474a66e1520b0"  # 替换为你的 DeepSeek API Key
+  api_key: ""
   base_url: "https://api.deepseek.com"
   model: "deepseek-chat"  # deepseek-chat 或 deepseek-coder
   temperature: 0.7
@@ -34,11 +35,21 @@ anthropic:
   max_tokens: 4096
   timeout: 600
 
+# Minimax 配置
+minimax:
+  api_key: ""
+  base_url: "https://api.minimax.chat/v1"
+  model: "MiniMax-M2.5"
+  group_id: ""  # 团队ID，可选
+  temperature: 0.7
+  max_tokens: 4096
+  timeout: 600
+
 # 自定义 API (百应) 配置
 custom:
   api_key: "sk-fc19155e-54de-475e-b259-5ea4ef8294ea_tool"
   base_url: "https://llm-model-api-test.baiying.com.cn"
-  model: ""  # 替换成自己的modi id
+  model: "doubao-seed-2-0-pro-260215"  # 替换成自己的modi id
   session_id: "1-SHARE_TITLE"
   temperature: 0.7
   max_tokens: 4096
