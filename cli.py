@@ -171,7 +171,10 @@ def main():
 
     # 创建 Agent
     print("Initializing OpenClaw Agent...")
-    agent = MasterAgent(confirm_dangerous_tools=not args.no_confirm)
+    agent = MasterAgent(
+        max_iterations=20,
+        confirm_dangerous_tools=not args.no_confirm
+    )
     agent.print_welcome()
 
     if args.show_prompt:

@@ -21,6 +21,7 @@ class CustomLLM(BaseLLM):
         max_tokens: int = None,
         timeout: int = None,
         provider: str = None,
+        group_id: str = None,
         **kwargs
     ):
         # 如果没有传入参数，从配置文件读取
@@ -37,9 +38,14 @@ class CustomLLM(BaseLLM):
         base_url = base_url or config.get('base_url', '')
         model = model or config.get('model', '')
         session_id = session_id or config.get('session_id', '1-SHARE_TITLE')
+        group_id = group_id or config.get('group_id', '')
         temperature = temperature if temperature is not None else config.get('temperature', 0.7)
         max_tokens = max_tokens or config.get('max_tokens', 4096)
         timeout = timeout or config.get('timeout', 600)
+
+        # 将 group_id 放入 kwargs 传给 BaseLLM
+        if group_id:
+            kwargs['group_id'] = group_id
 
         super().__init__(
             api_key=api_key,
@@ -67,6 +73,8 @@ class CustomLLM(BaseLLM):
             return self._call_deepseek(prompt, messages, tools, **kwargs)
         elif self.provider == 'openai':
             return self._call_openai(prompt, messages, tools, **kwargs)
+        elif self.provider == 'minimax':
+            return self._call_minimax(prompt, messages, tools, **kwargs)
         else:
             # 默认使用百应 custom 格式
             return self._call_custom(prompt, messages, tools, **kwargs)
@@ -123,6 +131,61 @@ class CustomLLM(BaseLLM):
     def _call_openai(self, prompt, messages, tools, **kwargs):
         """调用 OpenAI API"""
         return self._call_deepseek(prompt, messages, tools, **kwargs)
+
+    def _call_minimax(self, prompt, messages, tools, **kwargs):
+        """调用 Minimax API"""
+        # 从 extra_kwargs 获取 group_id
+        group_id = self.extra_kwargs.get('group_id')
+
+        url = f"{self.base_url}/text/chatcompletion_v2"
+
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {self.api_key}'
+        }
+
+        if group_id:
+            headers['Authorization'] = f'Bearer {self.api_key}; {group_id}'
+
+        # 构建消息
+        if messages is None:
+            messages = []
+
+        if prompt and not messages:
+            messages = [{'role': 'user', 'content': prompt}]
+
+        # 标准化消息
+        normalized_messages = self._normalize_messages(messages)
+
+        # 构建请求数据 (标准 OpenAI 格式)
+        data = {
+            'model': self.model,
+            'messages': normalized_messages,
+            'temperature': kwargs.get('temperature', self.temperature),
+            'max_tokens': kwargs.get('max_tokens', self.max_tokens),
+        }
+
+        if tools is not None:
+            data['tools'] = tools
+
+        try:
+            response = requests.post(
+                url=url,
+                headers=headers,
+                json=data,
+                timeout=self.timeout
+            )
+
+            response.raise_for_status()
+            result = response.json()
+
+            return self._parse_response(result)
+
+        except Exception as e:
+            return {
+                'type': 'text',
+                'content': f"错误：调用 Minimax API 失败 - {str(e)}"
+            }
 
     def _call_custom(self, prompt, messages, tools, **kwargs):
         """调用百应自定义 API"""

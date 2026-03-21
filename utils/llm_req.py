@@ -23,7 +23,7 @@ def call_llm(
     prompt: str = None,
     messages: list = None,
     tools: list = None,
-    model: str = "216224dc-465d-48d7-9aa2-2c177d7c2405",
+    model: str = "",
     temperature: float = 0.7,
     max_tokens: int = 4096,
     stream: bool = False,
@@ -35,7 +35,7 @@ def call_llm(
     """
     llm = _get_default_llm()
     # 如果传了 model 参数，更新实例的 model
-    if model != "216224dc-465d-48d7-9aa2-2c177d7c2405":
+    if model:
         llm.model = model
 
     return llm.call(
