@@ -39,7 +39,7 @@ anthropic:
 minimax:
   api_key: ""
   base_url: "https://api.minimax.chat/v1"
-  model: "MiniMax-M2.5"
+  model: "MiniMax-M2.7"
   group_id: ""  # 团队ID，可选
   temperature: 0.7
   max_tokens: 4096
@@ -68,6 +68,28 @@ agent:
 
   # System Prompt 文件路径
   system_prompt_file: null  # null 表示使用默认
+
+# ============================================
+# 多 Agent 配置
+# ============================================
+
+agents:
+  # 默认 agent（如果没有指定使用哪个 agent，则使用这个）
+  default: "agent1"
+
+  # Agent 列表，每个 agent 有独立的工作目录
+  list:
+    - name: "agent1"
+      workspace: "./workspace"
+      description: "通用任务处理：代码开发、文件操作、信息搜索、日常任务等全能型工作"
+
+    - name: "agent2"
+      workspace: "./workspace_agent2"
+      description: "文档与报告撰写：Markdown 报告、文章创作、内容整理、文档编辑"
+
+    - name: "agent3"
+      workspace: "./workspace_agent3"
+      description: "测试与调试：代码测试、Bug 修复、性能优化、技术调研"
 
 # ============================================
 # CLI 配置

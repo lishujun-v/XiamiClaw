@@ -17,8 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.agentic_loop import AgenticLoop
 from src.tool_registry import ToolRegistry
 from src.skill_loader import SkillLoader
-from memory import get_memory_manager
-from sessions import get_session_manager
+from memory import MemoryManager
+from sessions import SessionManager
 from utils.llm_req import call_llm
 
 
@@ -33,6 +33,8 @@ class MasterAgent:
         max_iterations: int = 10,
         show_progress: bool = True,
         confirm_dangerous_tools: bool = True,
+        workspace: str = "./workspace",
+        agent_name: str = "agent",
     ):
         """
         初始化 Master Agent
@@ -44,6 +46,8 @@ class MasterAgent:
             max_iterations: 最大迭代次数
             show_progress: 是否显示执行进度
             confirm_dangerous_tools: 是否在执行危险工具前确认 (默认 True)
+            workspace: 工作目录路径 (默认 "./workspace")
+            agent_name: Agent 名称 (默认 "agent")
         """
         # 默认 LLM 提供者
         if llm_provider is None:
@@ -53,12 +57,21 @@ class MasterAgent:
         self.show_progress = show_progress
         self.max_iterations = max_iterations
         self.confirm_dangerous_tools = confirm_dangerous_tools
+        self.workspace = workspace
+        self.agent_name = agent_name
 
         # 初始化组件
         self.tool_registry = tool_registry or self._create_tool_registry()
-        self.skill_loader = skill_loader or self._create_skill_loader()
-        self.memory_manager = get_memory_manager()
-        self.session_manager = get_session_manager()
+        self.skill_loader = skill_loader or self._create_skill_loader(workspace)
+
+        # 创建独立的 Memory 和 Session 管理器（基于 workspace）
+        memory_dir = os.path.join(workspace, "memory")
+        sessions_dir = os.path.join(workspace, "sessions")
+
+        self.memory_manager = MemoryManager(memory_dir)
+        self.memory_manager._ensure_memory_dir()  # 确保 memory 目录存在
+
+        self.session_manager = SessionManager(sessions_dir)  # SessionManager 会在初始化时创建目录
 
         # 创建 Agentic Loop
         self.loop = AgenticLoop(
@@ -67,6 +80,10 @@ class MasterAgent:
             skill_loader=self.skill_loader,
             max_iterations=max_iterations,
             confirm_dangerous_tools=confirm_dangerous_tools,
+            workspace=workspace,
+            agent_name=agent_name,
+            memory_manager=self.memory_manager,
+            session_manager=self.session_manager,
         )
 
     def _default_llm_provider(self, messages, tools=None, **kwargs):
@@ -77,9 +94,11 @@ class MasterAgent:
         """创建工具注册表"""
         return ToolRegistry()
 
-    def _create_skill_loader(self) -> SkillLoader:
+    def _create_skill_loader(self, workspace: str = "./workspace") -> SkillLoader:
         """创建 Skill 加载器"""
-        loader = SkillLoader()
+        # 每个 agent 有自己的 skills 目录
+        skills_dir = os.path.join(workspace, "skills")
+        loader = SkillLoader(skills_dir=skills_dir)
         loader.load_all()
         return loader
 
@@ -130,6 +149,8 @@ def create_agent(
     max_iterations: int = 10,
     show_progress: bool = True,
     confirm_dangerous_tools: bool = True,
+    workspace: str = "./workspace",
+    agent_name: str = "agent",
 ) -> MasterAgent:
     """
     创建 Master Agent 的便捷函数
@@ -138,6 +159,8 @@ def create_agent(
         max_iterations: 最大迭代次数
         show_progress: 是否显示进度
         confirm_dangerous_tools: 是否在执行危险工具前确认 (默认 True)
+        workspace: 工作目录路径 (默认 "./workspace")
+        agent_name: Agent 名称 (默认 "agent")
 
     Returns:
         MasterAgent 实例
@@ -146,6 +169,8 @@ def create_agent(
         max_iterations=max_iterations,
         show_progress=show_progress,
         confirm_dangerous_tools=confirm_dangerous_tools,
+        workspace=workspace,
+        agent_name=agent_name,
     )
 
 
