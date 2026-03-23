@@ -37,9 +37,110 @@ class MemoryManager:
         self.daily_dir = self.memory_dir / "daily"
 
     def _ensure_memory_dir(self):
-        """确保 memory 目录存在"""
+        """确保 memory 目录存在并创建模板文件"""
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.daily_dir.mkdir(parents=True, exist_ok=True)
+
+        # 创建模板文件（如果不存在）
+        self._create_template_if_not_exists(self.agent_file, self._get_agent_template())
+        self._create_template_if_not_exists(self.user_file, self._get_user_template())
+        self._create_template_if_not_exists(self.soul_file, self._get_soul_template())
+        self._create_template_if_not_exists(self.memory_file, self._get_memory_template())
+
+    def _create_template_if_not_exists(self, file_path: Path, template: str):
+        """如果文件不存在，创建模板文件"""
+        if not file_path.exists():
+            file_path.write_text(template, encoding="utf-8")
+
+    def _get_agent_template(self) -> str:
+        """获取 AGENT.md 模板"""
+        return f"""# AGENT.md
+
+> file_path: {self.agent_file}
+
+> 关于 agent 身份的信息
+
+## 基本信息
+- **姓名**: [待填写]
+- **角色**: [待填写]
+- **创建时间**: [待填写]
+
+## 能力
+- [待填写]
+
+## 已知信息
+- [待填写]
+
+## 备注
+- [待填写]
+"""
+
+    def _get_user_template(self) -> str:
+        """获取 USER.md 模板"""
+        return f"""# USER.md
+
+> file_path: {self.user_file}
+
+> 关于用户（主人）的信息
+
+## 基本信息
+- **姓名**: [待填写]
+- **称呼**: [待填写，如"老板"、"主人"等]
+
+## 偏好
+- **编程语言**: [待填写]
+- **代码风格**: [待填写，如 tab/空格]
+- **沟通方式**: [待填写]
+
+## 已知信息
+- **项目**: [待填写]
+- **工作**: [待填写]
+
+## 备注
+- [待填写]
+"""
+
+    def _get_soul_template(self) -> str:
+        """获取 SOUL.md 模板"""
+        return f"""# SOUL.md
+
+> file_path: {self.soul_file}
+
+> Agent 的性格和沟通风格
+
+## 性格
+- [待填写，如：活泼/沉稳/幽默]
+
+## 沟通风格
+- [待填写，如：简洁明了/详细解释]
+
+## 习惯
+- [待填写]
+
+## 备注
+- [待填写]
+"""
+
+    def _get_memory_template(self) -> str:
+        """获取 MEMORY.md 模板"""
+        return f"""# MEMORY.md
+
+> file_path: {self.memory_file}
+
+> 长期记忆 - 重要的决策、偏好和持久的事实
+
+## 重要信息
+- [待填写]
+
+## 决策记录
+- [待填写]
+
+## 学习笔记
+- [待填写]
+
+## 备注
+- [待填写]
+"""
 
     def get_agent_memory(self) -> str:
         """获取 AGENT.md 内容"""

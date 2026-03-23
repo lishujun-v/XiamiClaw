@@ -75,6 +75,51 @@ python cli.py "你好，请介绍一下自己"
 python cli.py -s
 ```
 
+## 多 Agent 模式
+
+XiamiClaw 支持同时创建多个 Agent，每个 Agent 拥有独立的工作目录（Workspace），实现任务的并行处理和隔离。
+
+### Agent 配置
+
+在 `config.yaml` 中配置多个 Agent：
+
+```yaml
+agents:
+  # 默认 agent（如果不指定使用哪个 agent，则使用这个）
+  default: "agent1"
+
+  # Agent 列表，每个 agent 有独立的工作目录
+  list:
+    - name: "agent1"
+      workspace: "./workspace"
+      description: "通用任务处理：代码开发、文件操作等"
+
+    - name: "agent2"
+      workspace: "./workspace_agent2"
+      description: "文档与报告撰写"
+
+    - name: "agent3"
+      workspace: "./workspace_agent3"
+      description: "测试与调试"
+```
+
+### 切换 Agent
+
+在交互模式下，使用 `/agent` 命令切换不同的 Agent：
+
+```
+/agent agent2    # 切换到 agent2
+/agent list      # 查看所有可用 Agent
+/agent current   # 查看当前 Agent
+```
+
+### Agent 特性
+
+- **独立 Workspace**：每个 Agent 在自己的工作目录中操作，互不干扰
+- **独立会话**：每个 Agent 维护自己的对话历史
+- **并行处理**：可以同时运行多个 Agent 处理不同任务
+- **灵活配置**：每个 Agent 可以配置不同的描述和职责
+
 ## 使用说明
 
 ### 交互模式命令
@@ -85,7 +130,8 @@ python cli.py -s
 - `/tools` - 查看可用工具
 - `/clear` - 清屏
 - `/prompt` - 显示当前 System Prompt
-- `/session` - 创建新 session（清除历史对话）
+- `/new` - 创建新 session（清除历史对话）
+- `/agent` - Agent 管理命令（见上文）
 
 ### 命令行参数
 
@@ -145,7 +191,9 @@ XiamiClaw/
 ├── tools/              # 工具集
 ├── skills/             # 技能集
 ├── utils/              # 工具函数
-└── workspace/         # 工作目录
+├── workspace/          # 默认 Agent 工作目录
+├── workspace_agent2/   # Agent2 工作目录
+└── workspace_agent3/   # Agent3 工作目录
 ```
 
 ## 环境要求

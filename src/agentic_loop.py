@@ -100,6 +100,10 @@ class AgenticLoop:
         loop_warning_threshold: int = 3,
         loop_max_threshold: int = 5,
         confirm_dangerous_tools: bool = True,
+        workspace: str = "./workspace",
+        agent_name: str = "agent",
+        memory_manager: Any = None,
+        session_manager: Any = None,
     ):
         """
         初始化 Agentic Loop
@@ -113,13 +117,26 @@ class AgenticLoop:
             enable_loop_detection: 启用循环检测
             loop_warning_threshold: 循环警告阈值
             loop_max_threshold: 循环最大阈值
+            workspace: 工作目录路径 (默认 "./workspace")
+            agent_name: Agent 名称 (默认 "agent")
+            memory_manager: 传入的 Memory 管理器实例（可选）
+            session_manager: 传入的 Session 管理器实例（可选）
         """
         self.llm_provider = llm_provider
         self.tool_registry = tool_registry
         self.skill_loader = skill_loader
 
-        # Memory 管理器
-        self.memory_manager = get_memory_manager()
+        # Memory 管理器 - 如果传入则使用传入的，否则使用全局的
+        if memory_manager is not None:
+            self.memory_manager = memory_manager
+        else:
+            self.memory_manager = get_memory_manager()
+
+        # Session 管理器 - 如果传入则使用传入的，否则使用全局的
+        if session_manager is not None:
+            self.session_manager = session_manager
+        else:
+            self.session_manager = get_session_manager()
 
         self.max_iterations = max_iterations
         self.max_tool_calls_per_iteration = max_tool_calls_per_iteration
@@ -127,6 +144,8 @@ class AgenticLoop:
         self.loop_warning_threshold = loop_warning_threshold
         self.loop_max_threshold = loop_max_threshold
         self.confirm_dangerous_tools = confirm_dangerous_tools
+        self.workspace = workspace
+        self.agent_name = agent_name
 
         # 危险工具列表
         self._dangerous_tools = {"exec", "write", "edit"}
@@ -135,9 +154,6 @@ class AgenticLoop:
         self.state = LoopState()
         self.messages: list[dict] = []
         self.skills_loaded: dict[str, str] = {}
-
-        # Memory 管理器
-        self.memory_manager = get_memory_manager()
 
     def _print_header(self, text: str):
         """打印标题"""
@@ -266,12 +282,15 @@ class AgenticLoop:
             if tool_name == "read":
                 path = args.get("path", "") or args.get("file_path", "")
                 # 检查是否是读取 skill 文件
+                # 获取 skill_loader 的 skills_dir
+                skills_dir = getattr(self.skill_loader, 'skills_dir', 'workspace/skills') if self.skill_loader else 'workspace/skills'
+
                 for skill_entry in self.skill_loader.get_all_skills():
                     skill_name = skill_entry.skill.name if hasattr(skill_entry, 'skill') else None
                     if not skill_name:
                         continue
-                    skill_path = f"workspace/skills/{skill_name}/SKILL.md"
-                    if skill_path in path or f"workspace/skills/{skill_name}" in path:
+                    skill_path = f"{skills_dir}/{skill_name}/SKILL.md"
+                    if skill_path in path or f"{skills_dir}/{skill_name}" in path:
                         self._print_skill_load(skill_name)
                         content = self.skill_loader.get_skill_content(skill_name)
                         if content:
@@ -280,7 +299,7 @@ class AgenticLoop:
                 # 检查是否是读取其他 skill 相关文件
                 if "skill" in path.lower() or "SKILL" in path:
                     # 尝试提取 skill 名称
-                    match = re.search(r'(?:workspace/skills?[/\\]?|skills?[/\\]?|SKILL\.md[/\\]?)(\w+)', path, re.IGNORECASE)
+                    match = re.search(r'(?:' + re.escape(skills_dir) + r'[/\\]?|skills?[/\\]?|SKILL\.md[/\\]?)(\w+)', path, re.IGNORECASE)
                     if match:
                         skill_name = match.group(1)
                         self._print_skill_load(skill_name)
@@ -495,12 +514,17 @@ class AgenticLoop:
         tool_descriptions = self._format_tool_descriptions()
 
         # 获取 session 历史对话
-        session_manager = get_session_manager()
-        conversation_history = session_manager.format_conversation_for_llm(max_messages=20)
+        conversation_history = self.session_manager.format_conversation_for_llm(max_messages=20)
 
         # 获取当前时间
         from datetime import datetime
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # 计算 memory 基础路径
+        memory_base = self.workspace
+        if not memory_base.endswith('/'):
+            memory_base += '/'
+        memory_base += 'memory'
 
         # 构建系统提示
         parts = []
@@ -545,7 +569,7 @@ class AgenticLoop:
 - **避免过度描述**：除非用户明确要求，否则不要详细描述执行过程
 
 示例：
-✅ 正确："已创建文件 `/workspace/test.py` 并执行成功。当前时间是 2024-03-17 10:30:45"
+✅ 正确："已创建文件 `{self.workspace}/test.py` 并执行成功。当前时间是 {current_time}"
 ❌ 错误："我来帮您完成这个任务。首先我使用了 write 工具创建了一个 Python 文件，这个文件包含了..."
 
 ### 安全准则
@@ -581,7 +605,7 @@ class AgenticLoop:
 </available_skills>""")
 
         # === 4. 记忆召回 ===
-        parts.append("""## 记忆召回 (Memory Recall)
+        parts.append(f"""## 记忆召回 (Memory Recall)
 在回答任何关于以下内容的问题之前，**必须**执行：
 1. 使用 `memory_search` 搜索 MEMORY.md + memory/*.md
 2. 使用 `memory_get` 拉取需要的行
@@ -620,10 +644,12 @@ class AgenticLoop:
 {memory_info}""")
 
         # === 8. 工作目录 ===
-        parts.append("""## 工作目录 (Workspace)
-你的工作目录是：`./workspace`
+        parts.append(f"""## 工作目录 (Workspace)
+你的工作目录是：`{self.workspace}`
 
-**重要**：除非用户明确指示，否则所有文件操作都在此目录下进行。""")
+**重要**：除非用户明确指示，否则所有文件操作都在此目录下进行。
+
+**注意**：不同 agent 的工作目录是隔离的，当前 agent 的工作目录是 `{self.workspace}`。""")
 
         # === 9. 当前时间 ===
         parts.append(f"""## 当前时间
@@ -631,7 +657,7 @@ class AgenticLoop:
 当前时间：{current_time}""")
 
         # === 10. 执行模式 ===
-        parts.append("""## 执行模式 - ReAct
+        parts.append(f"""## 执行模式 - ReAct
 按以下步骤思考和执行：
 
 1. **Think (思考)**：分析任务，理解用户需求，规划解决步骤
@@ -658,7 +684,7 @@ class AgenticLoop:
 | **MEMORY.md** | 对话中有重要的事实、决定或需要长期记住的信息 | "这个项目的架构是..."、"下次继续这个任务" |
 
 ### 更新步骤（必须按顺序）
-1. 先用 `read` 工具读取对应的 memory 文件（如 `workspace/memory/USER.md`）
+1. 先用 `read` 工具读取对应的 memory 文件（如 `{memory_base}/USER.md`）
 2. 分析现有内容，决定是修改、替换还是跳过
 3. 如果需要更新，使用 `write` 工具写入完整内容（保留原有重要信息，只修改/新增相关内容）
 
@@ -668,11 +694,11 @@ class AgenticLoop:
 - 不确定的信息
 
 ### 文件位置
-所有 memory 文件都在 `./workspace/memory/` 目录下：
-- `workspace/memory/USER.md` - 用户信息
-- `workspace/memory/AGENT.md` - Agent 身份信息
-- `workspace/memory/SOUL.md` - Agent 性格设定
-- `workspace/memory/MEMORY.md` - 长期记忆
+所有 memory 文件都在 `{memory_base}/` 目录下：
+- `{memory_base}/USER.md` - 用户信息
+- `{memory_base}/AGENT.md` - Agent 身份信息
+- `{memory_base}/SOUL.md` - Agent 性格设定
+- `{memory_base}/MEMORY.md` - 长期记忆
 
 ### 重要提示
 **你有责任主动维护这些文件！** 如果对话中发现了值得记录的信息，在最终回复用户后，主动调用工具更新相应的文件。
@@ -743,6 +769,9 @@ class AgenticLoop:
         if not all_skills:
             return "<skill><name>none</name><description>No skills available</description></skill>"
 
+        # 获取 skill_loader 的 skills_dir
+        skills_dir = getattr(self.skill_loader, 'skills_dir', 'workspace/skills') if self.skill_loader else 'workspace/skills'
+
         lines = []
         for skill_entry in all_skills:
             try:
@@ -750,13 +779,13 @@ class AgenticLoop:
                 if hasattr(skill_entry, 'skill'):
                     name = skill_entry.skill.name
                     description = skill_entry.skill.description
-                    location = f"workspace/skills/{name}/SKILL.md"
+                    location = f"{skills_dir}/{name}/SKILL.md"
                 else:
                     # 备用方式
                     skill_dict = skill_entry if isinstance(skill_entry, dict) else {}
                     name = skill_dict.get('skill', {}).get('name', 'unknown')
                     description = skill_dict.get('skill', {}).get('description', '')
-                    location = f"workspace/skills/{name}/SKILL.md"
+                    location = f"{skills_dir}/{name}/SKILL.md"
 
                 lines.append(f"""  <skill>
     <name>{name}</name>
@@ -827,9 +856,8 @@ class AgenticLoop:
         self.skills_loaded = {}
 
         # 创建新 session 并记录用户消息
-        session_manager = get_session_manager()
-        session_id = session_manager.create_session(user_message)
-        session_manager.add_user_message(user_message)
+        session_id = self.session_manager.create_session(user_message)
+        self.session_manager.add_user_message(user_message)
 
         # 构建初始消息
         system_prompt = self._build_system_prompt()
@@ -875,8 +903,7 @@ class AgenticLoop:
                 self.messages.append({"role": "assistant", "content": content})
 
                 # 记录到 session
-                session_manager = get_session_manager()
-                session_manager.add_assistant_message(content=content)
+                self.session_manager.add_assistant_message(content=content)
 
                 # if show_progress:
                 #     self._print_final_response(content)
@@ -952,8 +979,7 @@ class AgenticLoop:
                 })
 
                 # 记录 assistant 的 tool call 到 session
-                session_manager = get_session_manager()
-                session_manager.add_assistant_message(
+                self.session_manager.add_assistant_message(
                     content=None,
                     tool_calls=[{
                         "id": tool_call.call_id,
@@ -993,6 +1019,8 @@ def create_agentic_loop(
     tool_registry: Optional[Any] = None,
     skill_loader: Optional[Any] = None,
     confirm_dangerous_tools: bool = True,
+    workspace: str = "./workspace",
+    agent_name: str = "agent",
     **kwargs
 ) -> AgenticLoop:
     """
@@ -1003,6 +1031,8 @@ def create_agentic_loop(
         tool_registry: 工具注册表
         skill_loader: Skill 加载器
         confirm_dangerous_tools: 是否在执行危险工具前确认 (默认 True)
+        workspace: 工作目录路径 (默认 "./workspace")
+        agent_name: Agent 名称 (默认 "agent")
         **kwargs: 其他参数
 
     Returns:
@@ -1013,6 +1043,8 @@ def create_agentic_loop(
         tool_registry=tool_registry,
         skill_loader=skill_loader,
         confirm_dangerous_tools=confirm_dangerous_tools,
+        workspace=workspace,
+        agent_name=agent_name,
         **kwargs
     )
 
@@ -1025,6 +1057,8 @@ def run_agentic_loop(
     skill_loader: Optional[Any] = None,
     show_progress: bool = True,
     confirm_dangerous_tools: bool = True,
+    workspace: str = "./workspace",
+    agent_name: str = "agent",
     **kwargs
 ) -> str:
     """
@@ -1037,6 +1071,8 @@ def run_agentic_loop(
         skill_loader: Skill 加载器
         show_progress: 是否显示进度
         confirm_dangerous_tools: 是否在执行危险工具前确认 (默认 True)
+        workspace: 工作目录路径 (默认 "./workspace")
+        agent_name: Agent 名称 (默认 "agent")
         **kwargs: 其他参数
 
     Returns:
@@ -1047,6 +1083,8 @@ def run_agentic_loop(
         tool_registry=tool_registry,
         skill_loader=skill_loader,
         confirm_dangerous_tools=confirm_dangerous_tools,
+        workspace=workspace,
+        agent_name=agent_name,
         **kwargs
     )
 
