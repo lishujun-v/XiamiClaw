@@ -15,6 +15,7 @@ import sys
 import argparse
 import yaml
 import platform
+import textwrap
 from datetime import datetime
 
 # 设置 UTF-8 编码
@@ -22,6 +23,8 @@ os.environ['PYTHONIOENCODING'] = 'utf-8'
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from src.agentic_loop import EventType
 
 
 # 获取终端宽度
@@ -228,6 +231,123 @@ def select_agent_with_arrows(agents: dict, current_agent_name: str):
             return None
 
 
+def print_response_box(content: str, width: int):
+    """以稳定的多行格式渲染回复框，避免重复换行和框线错位"""
+    if content is None:
+        return
+
+    normalized = str(content).replace('\r\n', '\n').rstrip()
+    if not normalized:
+        normalized = "(空回复)"
+
+    inner_width = max(10, width - 4)
+    lines = []
+    for raw_line in normalized.split('\n'):
+        wrapped = textwrap.wrap(
+            raw_line,
+            width=inner_width,
+            replace_whitespace=False,
+            drop_whitespace=False,
+        )
+        if wrapped:
+            lines.extend(wrapped)
+        else:
+            lines.append("")
+
+    print(f"╭{'─' * (width - 2)}╮")
+    for line in lines:
+        print(f"│ {line.ljust(inner_width)} │")
+    print(f"╰{'─' * (width - 2)}╯")
+
+
+def _clear_inline_status(stream_state: dict):
+    """清理单行状态提示，避免后续输出错位。"""
+    if stream_state.get("inline_status"):
+        print("\r\033[2K", end="", flush=True)
+        stream_state["inline_status"] = False
+
+
+def handle_event(event, stream_state: dict, width: int):
+    """根据事件类型处理"""
+    from src.agentic_loop import EventType
+
+    if event.type == EventType.THINKING_START:
+        _clear_inline_status(stream_state)
+        print(f"\n{color('🤔 思考中...', '1;34')}")
+    elif event.type == EventType.THINKING_PROGRESS:
+        elapsed = event.data.get('elapsed', 0) if isinstance(event.data, dict) else 0
+        last = stream_state.get("last_thinking_progress", 0.0)
+        if elapsed - last >= 5.0:
+            stream_state["last_thinking_progress"] = elapsed
+            print(f"\r\033[2K{color(f'… 仍在思考中 ({elapsed:.1f}s)', '2;34')}", end="", flush=True)
+            stream_state["inline_status"] = True
+    elif event.type == EventType.TOOL_CALL:
+        _clear_inline_status(stream_state)
+        tool_name = event.data['name']
+        args = event.data['args']
+        print(f"\n{color(f'⚡ 正在调用工具: {tool_name}', '1;33')}")
+        if args:
+            import json
+            args_str = json.dumps(args, indent=2, ensure_ascii=False)
+            if len(args_str) > 500:
+                args_str = args_str[:500] + "\n  ...(内容过长)"
+            print(f"{color(args_str, '2')}")
+    elif event.type == EventType.TOOL_PROGRESS:
+        tool_name = event.data.get('name', 'unknown') if isinstance(event.data, dict) else 'unknown'
+        elapsed = event.data.get('elapsed', 0) if isinstance(event.data, dict) else 0
+        last = stream_state.get("last_tool_progress", 0.0)
+        if elapsed - last >= 3.0:
+            stream_state["last_tool_progress"] = elapsed
+            print(f"\r\033[2K{color(f'… 工具 {tool_name} 执行中 ({elapsed:.1f}s)', '2;33')}", end="", flush=True)
+            stream_state["inline_status"] = True
+    elif event.type == EventType.TOOL_RESULT:
+        _clear_inline_status(stream_state)
+        success = event.data['success']
+        content = event.data['content']
+        error = event.data.get('error')
+        if success:
+            print(f"{color('✓ 工具执行成功', '32')}")
+            display_content = content[:1000] if content else ""
+            if len(content or "") > 1000:
+                display_content += "\n...(内容过长)"
+            if display_content:
+                print(f"\n{color(display_content, '2')}")
+        else:
+            print(f"{color('✗ 工具执行失败', '31')}")
+            if error:
+                print(f"{color(error, '31')}")
+    elif event.type == EventType.STREAM_CHUNK:
+        _clear_inline_status(stream_state)
+        # 流式输出片段
+        if not stream_state["open"]:
+            print(f"╭{'─' * (width - 2)}╮")
+            print(f"│ ", end='', flush=True)
+            stream_state["open"] = True
+            stream_state["had_stream"] = True
+        print(event.data, end='', flush=True)
+    elif event.type == EventType.STREAM_END:
+        _clear_inline_status(stream_state)
+        print()  # 换行
+        print(f"╰{'─' * (width - 2)}╯")
+        stream_state["open"] = False
+    elif event.type == EventType.ITERATION_START:
+        _clear_inline_status(stream_state)
+        data = event.data or {}
+        current = data.get("iteration")
+        total = data.get("max_iterations")
+        if current and total:
+            print(color(f"\n▶ 迭代 {current}/{total}", "2;36"))
+    elif event.type == EventType.ITERATION_END:
+        # 迭代结束，不显示详细信息
+        pass
+    elif event.type == EventType.ERROR:
+        _clear_inline_status(stream_state)
+        print(f"\n{color(f'错误: {event.data}', '31')}")
+    elif event.type == EventType.FINAL_RESPONSE:
+        # FINAL_RESPONSE 事件只在非流式模式下由外层处理
+        pass
+
+
 def interactive_mode(agents: dict, current_agent_name: str, default_agent: str):
     """
     交互模式
@@ -236,8 +356,11 @@ def interactive_mode(agents: dict, current_agent_name: str, default_agent: str):
         agents: 所有 agent 的字典 {name: agent_instance}
         current_agent_name: 当前使用的 agent 名称
         default_agent: 默认 agent 名称
+        stream_callback: 流式回调函数，用于实时打印 LLM 输出
     """
     print_welcome(current_agent_name)
+    if current_agent_name in agents:
+        print(f"  最大迭代次数: {agents[current_agent_name].max_iterations}")
 
     # 检查 readline 库
     try:
@@ -332,10 +455,21 @@ def interactive_mode(agents: dict, current_agent_name: str, default_agent: str):
 
             # 执行请求 - 使用当前选中的 agent
             current_agent = agents[current_agent_name]
-            response = current_agent.run(user_input)
-            print(f"╭{'─' * (width - 2)}╮")
-            print(f"    {response}")
-            print(f"╰{'─' * (width - 2)}╯")
+
+            # 使用事件流方式执行
+            stream_state = {"open": False, "had_stream": False}
+            final_response = None
+
+            for event in current_agent.run_stream(user_input):
+                if event.type == EventType.FINAL_RESPONSE:
+                    final_response = event.data
+                else:
+                    handle_event(event, stream_state, width)
+
+            # 如果没有任何流式输出，使用 FINAL_RESPONSE 显示
+            # 使用 FINAL_RESPONSE 显示
+            if not stream_state["had_stream"] and final_response is not None:
+                print_response_box(final_response, width)
 
         except KeyboardInterrupt:
             print("\n\nGoodbye!")
@@ -397,7 +531,7 @@ def list_available_agents():
         print(f"  - {name}: {desc} (workspace: {workspace})")
 
 
-def create_all_agents(confirm_dangerous_tools: bool = True):
+def create_all_agents(confirm_dangerous_tools: bool = True, max_iterations: int = 20):
     """
     创建所有配置的 agents
 
@@ -419,7 +553,7 @@ def create_all_agents(confirm_dangerous_tools: bool = True):
         name = agent_cfg.get('name', 'agent')
         workspace = agent_cfg.get('workspace', './workspace')
         agent = MasterAgent(
-            max_iterations=20,
+            max_iterations=max_iterations,
             confirm_dangerous_tools=confirm_dangerous_tools,
             workspace=workspace,
             agent_name=name,
@@ -438,6 +572,8 @@ def main():
     parser.add_argument('--no-confirm', action='store_true', help='禁用危险工具执行前确认')
     parser.add_argument('-a', '--agent', type=str, default=None, help='选择要使用的 agent (如 agent1, agent2, agent3)')
     parser.add_argument('--list-agents', action='store_true', help='列出所有可用的 agent')
+    parser.add_argument('--stream', action='store_true', help='强制开启流式输出')
+    parser.add_argument('--max-iterations', type=int, default=50, help='最大迭代次数（默认 50）')
 
     args = parser.parse_args()
     print_home_banner()
@@ -449,7 +585,10 @@ def main():
 
     # 创建所有 agents
     confirm_dangerous = not args.no_confirm
-    agents, default_agent = create_all_agents(confirm_dangerous_tools=confirm_dangerous)
+    agents, default_agent = create_all_agents(
+        confirm_dangerous_tools=confirm_dangerous,
+        max_iterations=args.max_iterations,
+    )
 
     # 确定当前使用的 agent
     if args.agent and args.agent in agents:
@@ -461,19 +600,50 @@ def main():
 
     print(f"\n=== 当前 Agent: {current_agent_name} ===")
     print(f"Workspace: {current_agent.workspace}")
+    print(f"最大迭代次数: {current_agent.max_iterations}")
 
     if args.show_prompt:
         print("\n=== System Prompt ===")
         print(current_agent.get_system_prompt())
         print("\n" + "=" * 60)
 
+    # 检查是否启用流式输出
+    stream_callback = None
+    if args.stream:
+        # 通过命令行 --stream 参数强制开启
+        def stream_callback(chunk):
+            print(chunk, end='', flush=True)
+    else:
+        # 检查 config.yaml 中的配置
+        try:
+            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+            custom_config = config.get('custom', {})
+            if custom_config.get('stream', False):
+                def stream_callback(chunk):
+                    print(chunk, end='', flush=True)
+        except:
+            pass
+
     if args.interactive or args.message is None:
         # 交互模式 - 传入所有 agents 和当前 agent
         interactive_mode(agents, current_agent_name, default_agent)
     else:
         # 单次执行 - 使用指定的 agent
-        response = current_agent.run(args.message)
-        print(f"\n{response}")
+        width = get_terminal_width()
+        stream_state = {"open": False, "had_stream": False}
+        final_response = None
+
+        for event in current_agent.run_stream(args.message):
+            if event.type == EventType.FINAL_RESPONSE:
+                final_response = event.data
+            else:
+                handle_event(event, stream_state, width)
+
+        # 如果没有任何流式输出，使用 FINAL_RESPONSE 显示
+        if not stream_state["had_stream"] and final_response is not None:
+            print_response_box(final_response, width)
 
 
 if __name__ == "__main__":

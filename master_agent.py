@@ -102,17 +102,31 @@ class MasterAgent:
         loader.load_all()
         return loader
 
-    def run(self, user_message: str) -> str:
+    def run(self, user_message: str, stream_callback=None) -> str:
         """
         运行 Agent 处理用户消息
 
         Args:
             user_message: 用户消息
+            stream_callback: 流式回调函数，用于实时打印 LLM 输出
 
         Returns:
             Agent 的最终回复
         """
-        return self.loop.run(user_message, show_progress=self.show_progress)
+        return self.loop.run(user_message, show_progress=self.show_progress, stream_callback=stream_callback)
+
+    def run_stream(self, user_message: str, show_progress: bool = True):
+        """
+        运行 Agent 处理用户消息 (生成器版本)
+
+        Args:
+            user_message: 用户消息
+            show_progress: 是否显示进度
+
+        Returns:
+            生成器 yield 事件
+        """
+        yield from self.loop.run_stream(user_message, show_progress=show_progress)
 
     def get_system_prompt(self) -> str:
         """获取当前 System Prompt"""

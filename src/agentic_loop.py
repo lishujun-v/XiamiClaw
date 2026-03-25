@@ -15,9 +15,12 @@ Agentic Loop 模块
 import json
 import re
 import time
+import threading
+from queue import Empty, Queue
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Optional
+from enum import Enum
+from typing import Any, Callable, Generator, Optional
 
 # 导入 memory 模块
 from memory import (
@@ -32,6 +35,26 @@ from sessions import (
     # add_tool_result,
     # format_conversation_for_llm,
 )
+
+
+class EventType(Enum):
+    ITERATION_START = "iteration_start"
+    THINKING_START = "thinking_start"
+    THINKING_PROGRESS = "thinking_progress"
+    STREAM_CHUNK = "stream_chunk"
+    STREAM_END = "stream_end"
+    TOOL_CALL = "tool_call"
+    TOOL_PROGRESS = "tool_progress"
+    TOOL_RESULT = "tool_result"
+    ITERATION_END = "iteration_end"
+    FINAL_RESPONSE = "final_response"
+    ERROR = "error"
+
+
+@dataclass
+class Event:
+    type: EventType
+    data: Any
 
 
 class Colors:
@@ -259,22 +282,20 @@ class AgenticLoop:
                 lines.append(f"- **{name}**: {desc}")
             return "\n".join(lines)
 
-    def _check_and_load_skill(self, tool_call: ToolCall = None, last_message: str = None) -> Optional[str]:
+    def _check_and_load_skill(self, tool_call: ToolCall = None) -> Optional[str]:
         """
         检查是否需要加载 skill 并加载
 
         流程：
         1. 如果模型调用了 read 工具读取某个 skill 的 SKILL.md，直接返回内容
-        2. 如果模型在消息中提到要使用某个 skill，加载该 skill 的完整内容
 
         Args:
             tool_call: 工具调用（如果有）
-            last_message: 最后的助手消息（如果有）
 
         Returns:
             加载的 skill 内容，如果没有则返回 None
         """
-        # 方式1: 通过 tool_call 检测（模型读取 skill 文件）
+        # 通过 tool_call 检测（模型读取 skill 文件）
         if tool_call:
             tool_name = tool_call.name
             args = tool_call.arguments
@@ -308,38 +329,9 @@ class AgenticLoop:
                             self.skills_loaded[skill_name] = content
                             return f"\n\n## Skill: {skill_name}\n\n{content}\n"
 
-        # 方式2: 检测消息中是否提到使用某个 skill
-        if last_message:
-            msg_lower = last_message.lower()
-            for skill_entry in self.skill_loader.get_all_skills():
-                skill_name = skill_entry.skill.name if hasattr(skill_entry, 'skill') else None
-                if not skill_name:
-                    continue
-
-                # 检测关键词：使用/调用/执行 + skill 名称
-                patterns = [
-                    f"使用{skill_name}",
-                    f"调用{skill_name}",
-                    f"执行{skill_name}",
-                    f"use {skill_name}",
-                    f"call {skill_name}",
-                    f"execute {skill_name}",
-                ]
-
-                if any(p.lower() in msg_lower for p in patterns):
-                    # 检查是否已经加载过
-                    if skill_name in self.skills_loaded:
-                        return None
-
-                    self._print_skill_load(skill_name)
-                    content = self.skill_loader.get_skill_content(skill_name)
-                    if content:
-                        self.skills_loaded[skill_name] = content
-                        return f"\n\n## Skill: {skill_name}\n\n{content}\n"
-
         return None
 
-    def _execute_tool(self, tool_name: str, args: dict) -> tuple[bool, str, Optional[str]]:
+    def _execute_tool(self, tool_name: str, args: dict) -> tuple[bool, str, Optional[str], bool, bool]:
         """
         执行工具
 
@@ -348,23 +340,37 @@ class AgenticLoop:
             args: 工具参数
 
         Returns:
-            (成功标志, 内容, 错误信息)
+            (成功标志, 内容, 错误信息, 是否取消任务, 是否废弃当前tool)
         """
         if not self.tool_registry:
-            return False, "", "工具注册表未初始化"
+            return False, "", "工具注册表未初始化", False, False
 
         # 危险工具确认
-        if not self._confirm_dangerous_tool(tool_name, args):
-            return False, "", "用户取消执行"
+        confirmed, hint, cancel_task = self._confirm_dangerous_tool(tool_name, args)
+        if cancel_task:
+            # 用户选择取消整个任务
+            return False, "", "用户取消任务", True, False
+        if not confirmed:
+            return False, "", "用户取消执行", False, False
+
+        # 如果用户提供了补充提示，废弃当前 tool，让模型重新思考
+        if hint:
+            hint_message = {
+                "role": "user",
+                "content": f"【用户提示】刚才你打算执行 {tool_name} 工具，但我希望你在重新思考后给出更好的方案。我的补充意见是：{hint}\n\n请重新思考并决定下一步该怎么做。"
+            }
+            self.messages.append(hint_message)
+            # 返回特殊状态：废弃当前 tool，让模型重新思考
+            return True, "", None, False, True
 
         try:
             result = self.tool_registry.execute(tool_name, args)
             if result.success:
-                return True, result.content, None
+                return True, result.content, None, False, False
             else:
-                return False, "", result.error
+                return False, "", result.error, False, False
         except Exception as e:
-            return False, "", str(e)
+            return False, "", str(e), False, False
 
     def _detect_loop(self, tool_name: str, args: dict) -> tuple[bool, int]:
         """
@@ -393,22 +399,26 @@ class AgenticLoop:
 
         return count >= self.loop_warning_threshold, count
 
-    def _confirm_dangerous_tool(self, tool_name: str, args: dict) -> bool:
+    def _confirm_dangerous_tool(self, tool_name: str, args: dict) -> tuple[bool, str, bool]:
         """
-        确认危险工具执行
+        确认危险工具执行（支持上下箭头选择和补充提示）
 
         Args:
             tool_name: 工具名称
             args: 工具参数
 
         Returns:
-            True 表示确认执行，False 表示取消
+            (是否确认执行, 用户补充的提示信息, 是否取消任务)
+            - (True, "", False) 表示确认执行
+            - (False, "", False) 表示取消执行（当前工具）
+            - (True, "提示信息", False) 表示确认执行并补充了提示信息
+            - (False, "", True) 表示取消整个任务
         """
         if not self.confirm_dangerous_tools:
-            return True
+            return True, "", False
 
         if tool_name not in self._dangerous_tools:
-            return True
+            return True, "", False
 
         # 构建确认信息
         print(f"\n{Colors.YELLOW}{Colors.BOLD}⚠️  安全确认{Colors.RESET}")
@@ -436,29 +446,146 @@ class AgenticLoop:
             print(f"\n{Colors.GREEN}替换为:{Colors.RESET}")
             print(f"  {new_string[:100]}...")
 
-        print(f"\n{Colors.CYAN}请确认是否执行? [y/n]: {Colors.RESET}", end=" ")
+        # 交互式选择菜单
+        import sys
+        import tty
+        import termios
+
+        options = [
+            "▶ 确认执行",
+            "✗ 取消执行（当前工具）",
+            "○ 补充提示信息后继续执行",
+            "○ 取消任务（结束整个对话）",
+        ]
+        current = 0
+        hint_text = ""
+
+        def get_char():
+            """获取单个按键，不回显"""
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(sys.stdin.fileno())
+                ch = sys.stdin.read(1)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            return ch
+
+        def clear_lines(n):
+            """清除最后 n 行"""
+            for _ in range(n):
+                sys.stdout.write("\033[F")  # 移动到上一行开头
+                sys.stdout.write("\033[2K")  # 清除该行
+            sys.stdout.flush()
+
+        def print_options():
+            """打印选项菜单"""
+            for i, opt in enumerate(options):
+                if i == current:
+                    print(f"{Colors.CYAN}{Colors.BOLD}{opt}{Colors.RESET}")
+                else:
+                    print(f"  {opt}")
+
+        print(f"\n{Colors.CYAN}请选择操作（↑↓选择，回车确认）:{Colors.RESET}")
+        print_options()
 
         try:
-            response = input().strip().lower()
-            if response in ["y", "yes", "是", "确认"]:
+            while True:
+                c = get_char()
+
+                # 检测方向键 (ESC [A/B/C/D)
+                if c == '\x1b':
+                    next_char = get_char()
+                    if next_char == '[':
+                        direction = get_char()
+                        if direction == 'A':  # 上
+                            if current > 0:
+                                current -= 1
+                                clear_lines(len(options))
+                                print_options()
+                        elif direction == 'B':  # 下
+                            if current < len(options) - 1:
+                                current += 1
+                                clear_lines(len(options))
+                                print_options()
+                elif c == '\r' or c == '\n':  # 回车确认
+                    clear_lines(len(options) + 1)  # 清除菜单
+                    print()  # 换行
+                    break
+                elif c == '\x03':  # Ctrl+C
+                    clear_lines(len(options) + 1)
+                    print(f"{Colors.RED}✗ 已取消执行{Colors.RESET}")
+                    return False, "", False
+                elif c == '\x04':  # Ctrl+D
+                    clear_lines(len(options) + 1)
+                    print(f"{Colors.RED}✗ 已取消执行{Colors.RESET}")
+                    return False, "", False
+
+            # 处理选择结果
+            if current == 0:
+                # 确认执行
                 print(f"{Colors.GREEN}✓ 已确认，执行中...{Colors.RESET}")
-                return True
-            else:
+                return True, "", False
+            elif current == 1:
+                # 取消执行（当前工具）
                 print(f"{Colors.RED}✗ 已取消执行{Colors.RESET}")
-                return False
+                return False, "", False
+            elif current == 2:
+                # 补充提示信息
+                print(f"{Colors.CYAN}请输入提示信息（将发送给模型作为参考），输入空行结束:{Colors.RESET}")
+                lines = []
+                while True:
+                    try:
+                        line = input()
+                        lines.append(line)
+                        # 空行结束输入
+                        if line == "":
+                            break
+                    except (EOFError, KeyboardInterrupt):
+                        break
+                hint_text = "\n".join(lines).strip()
+
+                if hint_text:
+                    print(f"{Colors.GREEN}✓ 收到提示信息，继续执行...{Colors.RESET}")
+                    return True, hint_text, False
+                else:
+                    print(f"{Colors.GREEN}✓ 无补充信息，执行中...{Colors.RESET}")
+                    return True, "", False
+            else:
+                # 取消任务（结束整个对话）
+                print(f"{Colors.YELLOW}⚠ 取消任务，结束对话...{Colors.RESET}")
+                return False, "", True
+
         except (EOFError, KeyboardInterrupt):
             print(f"\n{Colors.RED}✗ 已取消执行{Colors.RESET}")
-            return False
+            return False, "", False
+        finally:
+            # 确保终端设置恢复
+            pass
 
     def _call_llm(
         self,
         messages: list[dict],
         tools: list[dict] = None,
+        stream_callback=None,
         **kwargs
     ) -> dict:
-        """调用 LLM"""
+        """调用 LLM
+
+        Args:
+            stream_callback: 流式回调函数，每收到一个 chunk 调用一次
+        """
         if self.llm_provider:
-            return self.llm_provider(messages, tools, **kwargs)
+            from utils.llm_req import call_llm as _call_llm
+
+            response = _call_llm(
+                messages=messages,
+                tools=tools,
+                stream=bool(stream_callback),
+                stream_callback=stream_callback,
+                **kwargs
+            )
+            return response
         else:
             return self._mock_llm_response(messages)
 
@@ -484,12 +611,7 @@ class AgenticLoop:
                 name = func.get("name", "")
                 arguments = func.get("arguments", {})
 
-                # 如果是字符串，尝试解析
-                if isinstance(arguments, str):
-                    try:
-                        arguments = json.loads(arguments)
-                    except:
-                        arguments = {}
+                arguments = self._normalize_tool_arguments(arguments)
 
                 tool_calls.append(ToolCall(
                     name=name,
@@ -498,6 +620,87 @@ class AgenticLoop:
                 ))
 
         return tool_calls
+
+    def _normalize_tool_arguments(self, arguments: Any) -> dict:
+        """将 tool arguments 规范化为 dict，尽量容错解析流式/半结构化内容。"""
+        if isinstance(arguments, dict):
+            return arguments
+
+        if not isinstance(arguments, str):
+            return {}
+
+        raw = arguments.strip()
+        if not raw:
+            return {}
+
+        # 去掉常见 markdown code fence 包裹
+        if raw.startswith("```"):
+            parts = raw.split("```")
+            if len(parts) >= 3:
+                raw = parts[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
+
+        # 直接解析
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            pass
+
+        # 容错：提取第一个 {...} 再解析
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidate = raw[start:end + 1]
+            try:
+                parsed = json.loads(candidate)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                pass
+
+        return {}
+
+    def _validate_tool_args(self, tool_name: str, args: dict) -> Optional[str]:
+        """校验工具参数，返回错误信息；合法时返回 None。"""
+        if not self.tool_registry:
+            return None
+
+        tool_def = self.tool_registry.get_tool(tool_name)
+        if not tool_def:
+            return None
+
+        required = []
+        try:
+            required = tool_def.parameters.get("required", []) or []
+        except Exception:
+            required = []
+
+        missing = []
+        for key in required:
+            value = args.get(key)
+            if value is None:
+                missing.append(key)
+            elif isinstance(value, str) and not value.strip():
+                missing.append(key)
+
+        if missing:
+            return f"工具 `{tool_name}` 参数无效，缺少必填参数: {', '.join(missing)}。"
+
+        # 针对核心工具做更严格的空值校验
+        strict_string_fields = {
+            "read": ["file_path"],
+            "write": ["file_path", "content"],
+            "edit": ["file_path", "old_string", "new_string"],
+            "exec": ["command"],
+        }
+        for key in strict_string_fields.get(tool_name, []):
+            value = args.get(key)
+            if not isinstance(value, str) or not value.strip():
+                return f"工具 `{tool_name}` 参数无效，`{key}` 不能为空字符串。"
+
+        return None
 
     def _build_system_prompt(self) -> str:
         """构建系统提示 - 中文强化版"""
@@ -836,20 +1039,46 @@ class AgenticLoop:
         self,
         user_message: str,
         show_progress: bool = True,
-    ) -> str:
+        stream_callback=None,
+    ) -> Optional[str]:
         """
-        运行 Agentic Loop
+        运行 Agentic Loop (兼容版本，内部使用 run_stream)
 
         Args:
             user_message: 用户消息
             show_progress: 是否显示进度
+            stream_callback: 流式回调函数，用于实时打印 LLM 输出
 
         Returns:
-            最终响应
+            最终响应，如果用户取消任务则返回 None
         """
-        # if show_progress:
-        #     self._print_header("Agentic Loop 启动")
+        final_result = None
 
+        for event in self.run_stream(user_message, show_progress=show_progress, stream_callback=stream_callback):
+            if event.type == EventType.FINAL_RESPONSE:
+                final_result = event.data
+
+        return final_result
+
+    def run_stream(
+        self,
+        user_message: str,
+        show_progress: bool = True,
+        stream_callback=None,
+    ) -> Generator[Event, None, str]:
+        """
+        运行 Agentic Loop (生成器版本，yield 事件)
+
+        Args:
+            user_message: 用户消息
+            show_progress: 是否显示进度
+            stream_callback: 流式回调函数，用于实时打印 LLM 输出
+
+        Yields:
+            Event: 各种类型的事件
+        Returns:
+            最终响应字符串
+        """
         # 初始化状态
         self.state = LoopState(start_time=time.time())
         self.messages = []
@@ -869,45 +1098,98 @@ class AgenticLoop:
 
         # 记录开始时间
         start_time = time.time()
-
         # ReAct 循环
         while self._should_continue(self.state.iteration):
             self.state.iteration += 1
 
             if show_progress:
-                self._print_iteration(self.state.iteration, self.max_iterations)
+                yield Event(EventType.ITERATION_START, {
+                    "iteration": self.state.iteration,
+                    "max_iterations": self.max_iterations,
+                    "elapsed": time.time() - self.state.start_time,
+                    "tool_calls": self.state.tool_calls,
+                })
 
             # 调用 LLM
             if show_progress:
-                self._print_thinking()
+                yield Event(EventType.THINKING_START, None)
 
-            response = self._call_llm(self.messages, tools=tools)
+            # 用于收集流式内容
+            full_content = []
+            stream_queue: Queue[str] = Queue()
+            response_holder: dict[str, dict] = {}
+            error_holder: dict[str, Exception] = {}
+            done_event = threading.Event()
+
+            def _stream_callback(chunk: str):
+                full_content.append(chunk)
+                stream_queue.put(chunk)
+                if stream_callback:
+                    stream_callback(chunk)
+
+            def _llm_worker():
+                try:
+                    response_holder["response"] = self._call_llm(
+                        self.messages,
+                        tools=tools,
+                        stream_callback=_stream_callback
+                    )
+                except Exception as e:
+                    error_holder["error"] = e
+                finally:
+                    done_event.set()
+
+            worker = threading.Thread(target=_llm_worker, daemon=True)
+            worker.start()
+
+            # 实时转发流式片段
+            llm_wait_start = time.time()
+            last_thinking_progress_emit = 0.0
+            has_stream_output = False
+            while True:
+                try:
+                    chunk = stream_queue.get(timeout=0.05)
+                    has_stream_output = True
+                    yield Event(EventType.STREAM_CHUNK, chunk)
+                except Empty:
+                    pass
+
+                # 思考阶段心跳：长时间无输出时给前端进度感知
+                elapsed_thinking = time.time() - llm_wait_start
+                if (not has_stream_output) and (elapsed_thinking - last_thinking_progress_emit >= 2.0):
+                    last_thinking_progress_emit = elapsed_thinking
+                    yield Event(EventType.THINKING_PROGRESS, {
+                        "iteration": self.state.iteration,
+                        "elapsed": elapsed_thinking,
+                    })
+
+                if done_event.is_set() and stream_queue.empty():
+                    break
+
+            worker.join(timeout=0)
+
+            if error_holder:
+                raise error_holder["error"]
+
+            response = response_holder.get("response", {"type": "text", "content": ""})
+
+            # 如果有流式回调触发，yield STREAM_END
+            if full_content:
+                yield Event(EventType.STREAM_END, None)
 
             # 解析工具调用
             tool_calls = self._parse_tool_calls(response)
 
-            # 检测是否在消息中提到要使用某个 skill
-            assistant_message = response.get("content", "")
-            skill_content = self._check_and_load_skill(last_message=assistant_message)
-            if skill_content:
-                if show_progress:
-                    print(f"\n{Colors.GREEN}检测到使用 Skill，已加载内容到上下文{Colors.RESET}")
-                self.messages.append({
-                    "role": "system",
-                    "content": f"## 加载的 Skill 内容\n{skill_content}"
-                })
-
             if not tool_calls:
                 # 没有工具调用，返回响应
                 content = response.get("content", "")
+
                 self.messages.append({"role": "assistant", "content": content})
 
                 # 记录到 session
                 self.session_manager.add_assistant_message(content=content)
 
-                # if show_progress:
-                #     self._print_final_response(content)
-
+                yield Event(EventType.FINAL_RESPONSE, content)
                 return content
 
             # 处理工具调用
@@ -919,7 +1201,7 @@ class AgenticLoop:
                 is_loop, loop_count = self._detect_loop(tool_name, tool_args)
 
                 if show_progress:
-                    self._print_tool_call(tool_name, tool_args)
+                    yield Event(EventType.TOOL_CALL, {"name": tool_name, "args": tool_args})
 
                 if is_loop:
                     if loop_count >= self.loop_max_threshold:
@@ -933,6 +1215,8 @@ class AgenticLoop:
                             "content": error_msg
                         })
 
+                        yield Event(EventType.ERROR, error_msg)
+                        yield Event(EventType.FINAL_RESPONSE, error_msg)
                         return error_msg
                     else:
                         if show_progress:
@@ -948,11 +1232,113 @@ class AgenticLoop:
                         "content": f"## 加载的 Skill 内容\n{skill_content}"
                     })
 
-                # 执行工具
-                success, content, error = self._execute_tool(tool_name, tool_args)
+                # 参数校验：参数异常不执行工具，直接反馈给模型重试
+                arg_error = self._validate_tool_args(tool_name, tool_args)
+                if arg_error:
+                    if show_progress:
+                        yield Event(EventType.TOOL_RESULT, {
+                            "success": False,
+                            "content": "",
+                            "error": arg_error
+                        })
+
+                    self.state.tool_calls += 1
+                    self.state.tool_history.append({
+                        "name": tool_name,
+                        "args": json.dumps(tool_args, sort_keys=True),
+                        "success": False,
+                        "timestamp": time.time(),
+                    })
+
+                    self.messages.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": tool_call.call_id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": json.dumps(tool_args)
+                            }
+                        }]
+                    })
+
+                    self.session_manager.add_assistant_message(
+                        content=None,
+                        tool_calls=[{
+                            "id": tool_call.call_id,
+                            "function": {
+                                "name": tool_name,
+                                "arguments": tool_args
+                            }
+                        }]
+                    )
+
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.call_id,
+                        "content": arg_error
+                    })
+                    self.session_manager.add_tool_result(tool_call_id=tool_call.call_id, content=arg_error)
+                    continue
+
+                # 执行工具（带心跳）
+                # 注意：危险工具需要交互确认，保持同步执行避免 stdin 竞争
+                if self.confirm_dangerous_tools and tool_name in self._dangerous_tools:
+                    success, content, error, cancel_task, discard = self._execute_tool(tool_name, tool_args)
+                else:
+                    exec_holder: dict[str, Any] = {}
+                    exec_error_holder: dict[str, Exception] = {}
+                    exec_done = threading.Event()
+
+                    def _tool_worker():
+                        try:
+                            exec_holder["result"] = self._execute_tool(tool_name, tool_args)
+                        except Exception as e:
+                            exec_error_holder["error"] = e
+                        finally:
+                            exec_done.set()
+
+                    tool_start = time.time()
+                    last_progress_emit = 0.0
+                    tool_thread = threading.Thread(target=_tool_worker, daemon=True)
+                    tool_thread.start()
+
+                    while not exec_done.wait(timeout=0.1):
+                        elapsed_tool = time.time() - tool_start
+                        if elapsed_tool - last_progress_emit >= 1.5:
+                            last_progress_emit = elapsed_tool
+                            if show_progress:
+                                yield Event(EventType.TOOL_PROGRESS, {
+                                    "name": tool_name,
+                                    "elapsed": elapsed_tool
+                                })
+
+                    tool_thread.join(timeout=0)
+
+                    if exec_error_holder:
+                        raise exec_error_holder["error"]
+
+                    success, content, error, cancel_task, discard = exec_holder.get(
+                        "result",
+                        (False, "", "工具执行异常", False, False)
+                    )
+
+                # 如果用户取消任务，直接结束
+                if cancel_task:
+                    yield Event(EventType.ERROR, "用户取消任务")
+                    yield Event(EventType.FINAL_RESPONSE, None)
+                    return None
+
+                # 如果废弃当前 tool，让模型重新思考
+                if discard:
+                    if show_progress:
+                        print(f"{Colors.YELLOW}⚠ 已废弃当前工具，等待模型重新思考...{Colors.RESET}")
+                    # 不记录到历史，不添加 tool 结果，继续下一个 tool 或重新循环
+                    continue
 
                 if show_progress:
-                    self._print_tool_result(success, content, error)
+                    yield Event(EventType.TOOL_RESULT, {"success": success, "content": content, "error": error})
 
                 # 记录到历史
                 self.state.tool_calls += 1
@@ -999,7 +1385,12 @@ class AgenticLoop:
                 })
 
                 # 记录 tool 结果到 session
-                session_manager.add_tool_result(tool_call_id=tool_call.call_id, content=result_content)
+                self.session_manager.add_tool_result(tool_call_id=tool_call.call_id, content=result_content)
+
+                yield Event(EventType.ITERATION_END, {
+                    "iteration": self.state.iteration,
+                    "tool_calls": self.state.tool_calls,
+                })
 
         # 达到最大迭代
         elapsed = time.time() - start_time
@@ -1011,6 +1402,8 @@ class AgenticLoop:
         final_response = ("我已尽最大努力处理您的请求，但尚未完成。"
                 "您可以提供更多细节或重新描述您的问题。")
 
+        yield Event(EventType.ERROR, "达到最大迭代")
+        yield Event(EventType.FINAL_RESPONSE, final_response)
         return final_response
 
 

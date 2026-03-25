@@ -14,7 +14,7 @@ class MinimaxLLM(BaseLLM):
         self,
         api_key: str,
         base_url: str = "https://api.minimax.chat/v1",
-        model: str = "MiniMax-Text-01",
+        model: str = "MiniMax-2.7",
         group_id: str = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
@@ -90,6 +90,21 @@ class MinimaxLLM(BaseLLM):
         for msg in messages:
             role = msg.get('role')
             content = msg.get('content')
+            normalized_role = role
+            normalized_content = content
+
+            if role == 'system':
+                normalized_role = 'user'
+                if isinstance(content, str):
+                    normalized_content = f"[SYSTEM]\n{content}"
+                elif isinstance(content, list):
+                    normalized_content = [
+                        {'type': 'text', 'text': f"[SYSTEM]\n{entry.get('text', '')}"}
+                        if isinstance(entry, dict) else entry
+                        for entry in content
+                    ]
+                else:
+                    normalized_content = content
 
             if role == 'tool':
                 normalized.append({
@@ -107,8 +122,8 @@ class MinimaxLLM(BaseLLM):
                 normalized.append(msg)
             else:
                 normalized.append({
-                    'role': role,
-                    'content': content
+                    'role': normalized_role,
+                    'content': normalized_content
                 })
         return normalized
 
@@ -150,6 +165,7 @@ class MinimaxLLM(BaseLLM):
                     'content': content
                 }
         else:
+            print(f"警告：API 返回结果中没有有效内容: {response_data}")
             return {
                 'type': 'text',
                 'content': "错误：API 返回结果中没有有效内容"

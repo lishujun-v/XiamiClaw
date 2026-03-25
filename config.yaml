@@ -6,11 +6,10 @@
 # ============================================
 
 # 当前使用的模型类型: deepseek / openai / anthropic / minimax / custom
-model_provider: minimax
+model_provider: custom
 
 # DeepSeek 配置
 deepseek:
-  # api_key: "sk-74086fecf7ee4d6f849474a66e1520b0"  # 替换为你的 DeepSeek API Key
   api_key: ""
   base_url: "https://api.deepseek.com"
   model: "deepseek-chat"  # deepseek-chat 或 deepseek-coder
@@ -48,12 +47,14 @@ minimax:
 # 自定义 API (百应) 配置
 custom:
   api_key: ""
+  model: ""  # 替换成自己的modi id
   base_url: "https://llm-model-api-test.baiying.com.cn"
-  model: "doubao-seed-2-0-pro-260215"  # 替换成自己的modi id
   session_id: "1-SHARE_TITLE"
   temperature: 0.7
-  max_tokens: 4096
+  max_tokens: 8192
   timeout: 600
+  read_timeout: 1800  # 读取超时(秒)，生成大内容时建议设置更长
+  stream: true  # 是否开启流式返回
 
 # ============================================
 # Agent 配置
@@ -83,13 +84,13 @@ agents:
       workspace: "./workspace"
       description: "通用任务处理：代码开发、文件操作、信息搜索、日常任务等全能型工作"
 
-    - name: "agent2"
-      workspace: "./workspace_agent2"
-      description: "文档与报告撰写：Markdown 报告、文章创作、内容整理、文档编辑"
+    # - name: "agent2"
+    #   workspace: "./workspace_agent2"
+    #   description: "文档与报告撰写：Markdown 报告、文章创作、内容整理、文档编辑"
 
-    - name: "agent3"
-      workspace: "./workspace_agent3"
-      description: "测试与调试：代码测试、Bug 修复、性能优化、技术调研"
+    # - name: "agent3"
+    #   workspace: "./workspace_agent3"
+    #   description: "测试与调试：代码测试、Bug 修复、性能优化、技术调研"
 
 # ============================================
 # CLI 配置
