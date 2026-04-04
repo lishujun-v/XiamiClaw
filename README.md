@@ -36,23 +36,27 @@ deepseek:
   api_key: "sk-你的API密钥"
   base_url: "https://api.deepseek.com"
   model: "deepseek-chat"  # 或 deepseek-coder
+  stream: true
 
 # OpenAI 配置
 openai:
   api_key: "sk-你的API密钥"
   base_url: "https://api.openai.com/v1"
   model: "gpt-4o"
+  stream: true
 
 # Anthropic (Claude) 配置
 anthropic:
   api_key: "sk-ant-你的API密钥"
   model: "claude-sonnet-4-20250514"
+  stream: true
 
 # 自定义 API (百应) 配置
 custom:
   api_key: "你的API密钥"
   base_url: "https://你的API地址"
   model: "模型ID"
+  stream: true
 ```
 
 ### 4. 启动命令
@@ -195,6 +199,13 @@ XiamiClaw/
 ├── workspace_agent2/   # Agent2 工作目录
 └── workspace_agent3/   # Agent3 工作目录
 ```
+
+## 日志
+
+- 每个 Agent 会在自己的 Workspace 下自动创建 `logs/` 目录
+- 日志文件默认命名为 `agent名_YYYY-MM-DD.log`
+- 当天单个日志文件达到 `5MB` 后，会自动切换到 `agent名_YYYY-MM-DD_01.log`、`_02.log` ...
+- 关键日志已覆盖：CLI 启动、Agent 初始化、LLM 请求、工具调用、Skill 加载、Session 持久化、运行异常
 
 ## 环境要求
 

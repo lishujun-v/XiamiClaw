@@ -32,6 +32,15 @@ class MinimaxLLM(BaseLLM):
         )
         self.group_id = group_id
 
+    def _build_chatcompletion_url(self) -> str:
+        """构建 Minimax chatcompletion_v2 URL，兼容 base_url 是否包含 /v1。"""
+        base = self.base_url.rstrip('/')
+        if base.endswith('/text/chatcompletion_v2'):
+            return base
+        if base.endswith('/v1'):
+            return f"{base}/text/chatcompletion_v2"
+        return f"{base}/v1/text/chatcompletion_v2"
+
     def call(
         self,
         prompt: str = None,
@@ -40,7 +49,7 @@ class MinimaxLLM(BaseLLM):
         **kwargs
     ) -> dict:
         """调用 Minimax API"""
-        url = f"{self.base_url}/text/chatcompletion_v2"
+        url = self._build_chatcompletion_url()
 
         headers = {
             'Content-Type': 'application/json',

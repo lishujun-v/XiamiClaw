@@ -5,6 +5,7 @@
 import os
 import re
 import subprocess
+import logging
 from typing import Optional
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,16 +31,18 @@ class SkillEntry:
 class SkillLoader:
     """Skill 加载器"""
 
-    def __init__(self, skills_dir: str = "workspace/skills"):
+    def __init__(self, skills_dir: str = "workspace/skills", logger=None):
         self.skills_dir = skills_dir
         self._skills: list[SkillEntry] = []
         self._loaded: set[str] = set()  # 已加载的 skill 内容
+        self.logger = logger or logging.getLogger("xiamiclaw.skill_loader")
 
     def load_all(self) -> list[SkillEntry]:
         """加载所有 skills"""
         self._skills = []
 
         if not os.path.exists(self.skills_dir):
+            self.logger.info("Skills directory does not exist: %s", self.skills_dir)
             return self._skills
 
         for item in os.listdir(self.skills_dir):
@@ -51,6 +54,7 @@ class SkillLoader:
                     if skill:
                         self._skills.append(skill)
 
+        self.logger.info("Loaded %s skills from %s", len(self._skills), self.skills_dir)
         return self._skills
 
     def _parse_skill_file(self, file_path: str) -> Optional[SkillEntry]:
@@ -101,7 +105,7 @@ class SkillLoader:
             )
 
         except Exception as e:
-            print(f"Error parsing skill file {file_path}: {e}")
+            self.logger.exception("Failed to parse skill file: %s", file_path)
             return None
 
     def filter_by_bins(self, available_bins: list[str]) -> list[SkillEntry]:
@@ -122,6 +126,7 @@ class SkillLoader:
                 key = f"{self.skills_dir}/{skill_name}"
                 if key not in self._loaded:
                     self._loaded.add(key)
+                    self.logger.info("Skill content loaded into context: %s", skill_name)
                 return skill.content
         return None
 

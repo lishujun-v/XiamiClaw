@@ -20,6 +20,7 @@ from src.skill_loader import SkillLoader
 from memory import MemoryManager
 from sessions import SessionManager
 from utils.llm_req import call_llm
+from utils.logging_utils import get_agent_logger
 
 
 class MasterAgent:
@@ -59,6 +60,13 @@ class MasterAgent:
         self.confirm_dangerous_tools = confirm_dangerous_tools
         self.workspace = workspace
         self.agent_name = agent_name
+        self.logger = get_agent_logger(agent_name=agent_name, workspace=workspace, component="master_agent")
+        self.logger.info(
+            "Initializing master agent | workspace=%s max_iterations=%s confirm_dangerous_tools=%s",
+            workspace,
+            max_iterations,
+            confirm_dangerous_tools,
+        )
 
         # 初始化组件
         self.tool_registry = tool_registry or self._create_tool_registry()
@@ -68,10 +76,16 @@ class MasterAgent:
         memory_dir = os.path.join(workspace, "memory")
         sessions_dir = os.path.join(workspace, "sessions")
 
-        self.memory_manager = MemoryManager(memory_dir)
+        self.memory_manager = MemoryManager(
+            memory_dir,
+            logger=get_agent_logger(agent_name=agent_name, workspace=workspace, component="memory"),
+        )
         self.memory_manager._ensure_memory_dir()  # 确保 memory 目录存在
 
-        self.session_manager = SessionManager(sessions_dir)  # SessionManager 会在初始化时创建目录
+        self.session_manager = SessionManager(
+            sessions_dir,
+            logger=get_agent_logger(agent_name=agent_name, workspace=workspace, component="sessions"),
+        )  # SessionManager 会在初始化时创建目录
 
         # 创建 Agentic Loop
         self.loop = AgenticLoop(
@@ -84,21 +98,32 @@ class MasterAgent:
             agent_name=agent_name,
             memory_manager=self.memory_manager,
             session_manager=self.session_manager,
+            logger=get_agent_logger(agent_name=agent_name, workspace=workspace, component="agentic_loop"),
+        )
+        self.logger.info(
+            "Master agent initialized | tools=%s skills=%s",
+            len(self.tool_registry.get_all_tools()),
+            len(self.skill_loader.get_all_skills()),
         )
 
     def _default_llm_provider(self, messages, tools=None, **kwargs):
         """默认 LLM 提供者"""
-        return call_llm(messages=messages, tools=tools)
+        return call_llm(messages=messages, tools=tools, logger=self.logger, workspace=self.workspace)
 
     def _create_tool_registry(self) -> ToolRegistry:
         """创建工具注册表"""
-        return ToolRegistry()
+        return ToolRegistry(
+            logger=get_agent_logger(agent_name=self.agent_name, workspace=self.workspace, component="tool_registry")
+        )
 
     def _create_skill_loader(self, workspace: str = "./workspace") -> SkillLoader:
         """创建 Skill 加载器"""
         # 每个 agent 有自己的 skills 目录
         skills_dir = os.path.join(workspace, "skills")
-        loader = SkillLoader(skills_dir=skills_dir)
+        loader = SkillLoader(
+            skills_dir=skills_dir,
+            logger=get_agent_logger(agent_name=self.agent_name, workspace=self.workspace, component="skill_loader"),
+        )
         loader.load_all()
         return loader
 
@@ -113,7 +138,12 @@ class MasterAgent:
         Returns:
             Agent 的最终回复
         """
-        return self.loop.run(user_message, show_progress=self.show_progress, stream_callback=stream_callback)
+        self.logger.info("Master agent run invoked | message_length=%s", len(user_message or ""))
+        try:
+            return self.loop.run(user_message, show_progress=self.show_progress, stream_callback=stream_callback)
+        except Exception:
+            self.logger.exception("Master agent run failed")
+            raise
 
     def run_stream(self, user_message: str, show_progress: bool = True):
         """
@@ -126,7 +156,16 @@ class MasterAgent:
         Returns:
             生成器 yield 事件
         """
-        yield from self.loop.run_stream(user_message, show_progress=show_progress)
+        self.logger.info("Master agent run_stream invoked | message_length=%s", len(user_message or ""))
+        try:
+            yield from self.loop.run_stream(
+                user_message,
+                show_progress=show_progress,
+                stream_callback=None,
+            )
+        except Exception:
+            self.logger.exception("Master agent run_stream failed")
+            raise
 
     def get_system_prompt(self) -> str:
         """获取当前 System Prompt"""

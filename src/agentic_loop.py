@@ -15,11 +15,13 @@ Agentic Loop 模块
 import json
 import re
 import time
+import logging
 import threading
 from queue import Empty, Queue
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Generator, Optional
 
 # 导入 memory 模块
@@ -35,6 +37,8 @@ from sessions import (
     # add_tool_result,
     # format_conversation_for_llm,
 )
+from utils.config import get_agent_config
+from utils.logging_utils import format_trace_message, summarize_for_log, summarize_tool_result, truncate_for_log
 
 
 class EventType(Enum):
@@ -127,6 +131,7 @@ class AgenticLoop:
         agent_name: str = "agent",
         memory_manager: Any = None,
         session_manager: Any = None,
+        logger=None,
     ):
         """
         初始化 Agentic Loop
@@ -169,6 +174,7 @@ class AgenticLoop:
         self.confirm_dangerous_tools = confirm_dangerous_tools
         self.workspace = workspace
         self.agent_name = agent_name
+        self.logger = logger or logging.getLogger("xiamiclaw.agentic_loop")
 
         # 危险工具列表
         self._dangerous_tools = {"exec", "write", "edit"}
@@ -177,6 +183,18 @@ class AgenticLoop:
         self.state = LoopState()
         self.messages: list[dict] = []
         self.skills_loaded: dict[str, str] = {}
+        self.logger.info(
+            "AgenticLoop initialized | agent=%s workspace=%s max_iterations=%s",
+            agent_name,
+            workspace,
+            max_iterations,
+        )
+
+    def _truncate_for_log(self, value: Any, limit: int = 300) -> str:
+        return truncate_for_log(value, limit=limit)
+
+    def _log_trace(self, stage: str, level: int = logging.INFO, **fields):
+        self.logger.log(level, format_trace_message(stage, **fields))
 
     def _print_header(self, text: str):
         """打印标题"""
@@ -312,22 +330,35 @@ class AgenticLoop:
                         continue
                     skill_path = f"{skills_dir}/{skill_name}/SKILL.md"
                     if skill_path in path or f"{skills_dir}/{skill_name}" in path:
-                        self._print_skill_load(skill_name)
-                        content = self.skill_loader.get_skill_content(skill_name)
-                        if content:
-                            self.skills_loaded[skill_name] = content
-                            return f"\n\n## Skill: {skill_name}\n\n{content}\n"
-                # 检查是否是读取其他 skill 相关文件
-                if "skill" in path.lower() or "SKILL" in path:
-                    # 尝试提取 skill 名称
-                    match = re.search(r'(?:' + re.escape(skills_dir) + r'[/\\]?|skills?[/\\]?|SKILL\.md[/\\]?)(\w+)', path, re.IGNORECASE)
+                            self._print_skill_load(skill_name)
+                            content = self.skill_loader.get_skill_content(skill_name)
+                            if content:
+                                self.skills_loaded[skill_name] = content
+                                self.logger.info("Skill loaded into context via explicit read: %s", skill_name)
+                                self._log_trace("SKILL_LOADED", skill=skill_name, source="explicit_read", path=path)
+                                return f"\n\n## Skill: {skill_name}\n\n{content}\n"
+                # 检查是否是读取其他 skill 相关文件。这里必须匹配真正的 skills
+                # 目录段，避免把 /itskill/... 之类的普通路径误判成技能目录。
+                normalized_path = path.replace("\\", "/")
+                skills_dir_normalized = str(skills_dir).replace("\\", "/").rstrip("/")
+                inferred_skill_name = None
+
+                if normalized_path.startswith(f"{skills_dir_normalized}/"):
+                    relative_path = normalized_path[len(skills_dir_normalized) + 1:]
+                    inferred_skill_name = relative_path.split("/", 1)[0]
+                else:
+                    match = re.search(r'(^|/)skills?/([A-Za-z0-9_-]+)(/|$)', normalized_path, re.IGNORECASE)
                     if match:
-                        skill_name = match.group(1)
-                        self._print_skill_load(skill_name)
-                        content = self.skill_loader.get_skill_content(skill_name)
-                        if content:
-                            self.skills_loaded[skill_name] = content
-                            return f"\n\n## Skill: {skill_name}\n\n{content}\n"
+                        inferred_skill_name = match.group(2)
+
+                if inferred_skill_name:
+                    content = self.skill_loader.get_skill_content(inferred_skill_name)
+                    if content:
+                        self._print_skill_load(inferred_skill_name)
+                        self.skills_loaded[inferred_skill_name] = content
+                        self.logger.info("Skill loaded into context via inferred path: %s", inferred_skill_name)
+                        self._log_trace("SKILL_LOADED", skill=inferred_skill_name, source="inferred_path", path=path)
+                        return f"\n\n## Skill: {inferred_skill_name}\n\n{content}\n"
 
         return None
 
@@ -349,12 +380,15 @@ class AgenticLoop:
         confirmed, hint, cancel_task = self._confirm_dangerous_tool(tool_name, args)
         if cancel_task:
             # 用户选择取消整个任务
+            self.logger.warning("Dangerous tool cancelled entire task | tool=%s", tool_name)
             return False, "", "用户取消任务", True, False
         if not confirmed:
+            self.logger.warning("Dangerous tool execution rejected | tool=%s", tool_name)
             return False, "", "用户取消执行", False, False
 
         # 如果用户提供了补充提示，废弃当前 tool，让模型重新思考
         if hint:
+            self.logger.info("Dangerous tool received user hint | tool=%s hint=%s", tool_name, self._truncate_for_log(hint))
             hint_message = {
                 "role": "user",
                 "content": f"【用户提示】刚才你打算执行 {tool_name} 工具，但我希望你在重新思考后给出更好的方案。我的补充意见是：{hint}\n\n请重新思考并决定下一步该怎么做。"
@@ -364,12 +398,16 @@ class AgenticLoop:
             return True, "", None, False, True
 
         try:
+            self.logger.info("Executing tool from loop | tool=%s args=%s", tool_name, self._truncate_for_log(args))
             result = self.tool_registry.execute(tool_name, args)
             if result.success:
+                self.logger.info("Tool execution succeeded | tool=%s", tool_name)
                 return True, result.content, None, False, False
             else:
+                self.logger.warning("Tool execution failed | tool=%s error=%s", tool_name, self._truncate_for_log(result.error))
                 return False, "", result.error, False, False
         except Exception as e:
+            self.logger.exception("Tool execution raised exception | tool=%s", tool_name)
             return False, "", str(e), False, False
 
     def _detect_loop(self, tool_name: str, args: dict) -> tuple[bool, int]:
@@ -419,6 +457,8 @@ class AgenticLoop:
 
         if tool_name not in self._dangerous_tools:
             return True, "", False
+
+        self.logger.warning("Dangerous tool pending confirmation | tool=%s args=%s", tool_name, self._truncate_for_log(args))
 
         # 构建确认信息
         print(f"\n{Colors.YELLOW}{Colors.BOLD}⚠️  安全确认{Colors.RESET}")
@@ -525,10 +565,12 @@ class AgenticLoop:
             if current == 0:
                 # 确认执行
                 print(f"{Colors.GREEN}✓ 已确认，执行中...{Colors.RESET}")
+                self.logger.info("Dangerous tool confirmed | tool=%s", tool_name)
                 return True, "", False
             elif current == 1:
                 # 取消执行（当前工具）
                 print(f"{Colors.RED}✗ 已取消执行{Colors.RESET}")
+                self.logger.warning("Dangerous tool rejected | tool=%s", tool_name)
                 return False, "", False
             elif current == 2:
                 # 补充提示信息
@@ -547,17 +589,21 @@ class AgenticLoop:
 
                 if hint_text:
                     print(f"{Colors.GREEN}✓ 收到提示信息，继续执行...{Colors.RESET}")
+                    self.logger.info("Dangerous tool confirmed with hint | tool=%s", tool_name)
                     return True, hint_text, False
                 else:
                     print(f"{Colors.GREEN}✓ 无补充信息，执行中...{Colors.RESET}")
+                    self.logger.info("Dangerous tool confirmed without additional hint | tool=%s", tool_name)
                     return True, "", False
             else:
                 # 取消任务（结束整个对话）
                 print(f"{Colors.YELLOW}⚠ 取消任务，结束对话...{Colors.RESET}")
+                self.logger.warning("Dangerous tool cancelled task from confirmation menu | tool=%s", tool_name)
                 return False, "", True
 
         except (EOFError, KeyboardInterrupt):
             print(f"\n{Colors.RED}✗ 已取消执行{Colors.RESET}")
+            self.logger.warning("Dangerous tool confirmation interrupted | tool=%s", tool_name)
             return False, "", False
         finally:
             # 确保终端设置恢复
@@ -583,8 +629,11 @@ class AgenticLoop:
                 tools=tools,
                 stream=bool(stream_callback),
                 stream_callback=stream_callback,
+                logger=self.logger,
+                workspace=self.workspace,
                 **kwargs
             )
+            self.logger.info("LLM returned | type=%s tool_calls=%s", response.get("type"), len(response.get("tool_calls") or []))
             return response
         else:
             return self._mock_llm_response(messages)
@@ -703,7 +752,7 @@ class AgenticLoop:
         return None
 
     def _build_system_prompt(self) -> str:
-        """构建系统提示 - 中文强化版"""
+        """构建系统提示，默认优先走最短执行路径。"""
         # 加载 memory 信息
         agent_info = self.memory_manager.get_agent_memory()
         user_info = self.memory_manager.get_user_memory()
@@ -720,7 +769,6 @@ class AgenticLoop:
         conversation_history = self.session_manager.format_conversation_for_llm(max_messages=20)
 
         # 获取当前时间
-        from datetime import datetime
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         # 计算 memory 基础路径
@@ -729,233 +777,128 @@ class AgenticLoop:
             memory_base += '/'
         memory_base += 'memory'
 
-        # 构建系统提示
+        prompt_context = {
+            "tool_descriptions": tool_descriptions,
+            "skills_prompt": skills_prompt,
+            "conversation_history": conversation_history,
+            "current_time": current_time,
+            "workspace": self.workspace,
+            "agent_name": self.agent_name,
+            "memory_base": memory_base,
+            "agent_info": agent_info,
+            "user_info": user_info,
+            "soul_info": soul_info,
+            "memory_info": memory_info,
+        }
+
+        external_prompt = self._load_external_system_prompt(prompt_context)
+        if external_prompt:
+            return external_prompt
+
+        return self._build_default_system_prompt(prompt_context)
+
+    def _load_external_system_prompt(self, context: dict[str, str]) -> Optional[str]:
+        """从配置文件加载外部 system prompt 模板。"""
+        agent_config = get_agent_config() or {}
+        prompt_file = agent_config.get("system_prompt_file")
+        if not prompt_file:
+            return None
+
+        prompt_path = Path(prompt_file)
+        if not prompt_path.is_absolute():
+            project_root = Path(__file__).resolve().parent.parent
+            prompt_path = project_root / prompt_path
+
+        if not prompt_path.exists():
+            return None
+
+        template = prompt_path.read_text(encoding="utf-8")
+        return self._render_prompt_template(template, context)
+
+    def _render_prompt_template(self, template: str, context: dict[str, str]) -> str:
+        """渲染外部 prompt 模板，使用双大括号占位符。"""
+        rendered = template
+        for key, value in context.items():
+            rendered = rendered.replace(f"{{{{{key}}}}}", value or "")
+        return rendered
+
+    def _build_default_system_prompt(self, context: dict[str, str]) -> str:
+        """默认 system prompt，强调最短、最可靠的执行路径。"""
         parts = []
 
-        # === 1. 开场 ===
         parts.append("""# 你是 XiamiClaw Agent
-你是一个运行在 XiamiClaw 中的智能个人助手。你的职责是帮助用户完成各种任务，包括但不限于：代码编写、信息搜索、文件处理、问题解答等。
+你是一个在本地工作区执行任务的智能助手。默认目标是用最短、最可靠的路径完成用户请求，而不是展示完整思考过程。""")
 
-## 核心原则
-- **主动思考**：在执行任务前先分析问题，规划解决方案
-- **保持简洁**：除非必要，否则不要过度解释
-- **诚实透明**：不知道的事情如实告知，不要编造信息
-- **安全第一**：涉及敏感操作时，先确认再执行""")
+        parts.append(f"""## 可用工具
+工具名大小写敏感，只能调用真实存在的工具：
+{context["tool_descriptions"]}""")
 
-        # === 2. 工具列表 ===
-        parts.append(f"""## 工具 (Tooling)
-**重要**：工具名称区分大小写，必须严格按照以下名称调用。
+        parts.append("""## 最短路径原则
+1. 能直接回答就直接回答，不调用工具。
+2. 简单任务优先最短路径：先定位最相关文件或命令，再直接修改或执行。
+3. 不要为了“更稳妥”而做无意义的额外读取、重复检查或拆分子任务。
+4. 不要重复调用同一个失败工具，除非参数或策略已经改变。
+5. 简单 coding/React/文件修改任务的目标是 1 到 3 次工具调用：
+   - 一次定位
+   - 一次修改
+   - 必要时一次验证
+6. 第一次读取如果已足够，就直接进入修改；不要继续扩散搜索。
+7. 不要调用未在工具列表中的工具。""")
 
-### 可用工具
-{tool_descriptions}
+        parts.append("""## Tool 使用规则
+- 默认不要叙述常规 tool 调用，直接执行。
+- 只有在多步骤、风险较高或用户明确要求时，才简短说明进展。
+- 涉及覆盖、删除、危险命令时，先提醒风险再执行。
+- 简单任务不要生成子代理，不要过度任务分解。""")
 
-### 工具调用规范
-- **常规操作**：直接调用工具，无需过多描述过程
-- **复杂任务**：多步骤工作时，适当说明进展和思路
-- **敏感操作**（删除、移动、覆盖等）：调用前告知用户潜在风险
-- **技术上下文**：可使用技术语言；非技术场景使用通俗易懂的人话
-- **存在专用工具时**：直接使用工具，而非让用户手动执行命令
+        parts.append(f"""## Skills
+先快速查看可用 skill 描述，再决定是否需要读取 SKILL.md。
+- 只有当用户明确点名 skill，或某个 skill 与任务高度明确匹配时，才读取一个 SKILL.md。
+- 普通 coding、React、小功能修改、文件编辑、命令执行，默认直接用工具，不要先读 skill。
+- 一次最多预读一个 skill。
 
-### 等待处理
-- 长时间等待的任务，使用 `exec` 时设置足够的 `yieldMs` 或使用 `process(action=poll, timeout=<毫秒>)` 进行轮询
-- 复杂或耗时的任务，考虑生成子代理（sub-agent）处理，完成后会自动通知
-
-### 命令执行与审批
-- 当 exec 返回需要审批时，显示完整的 /approve 命令（包含 allow-once|allow-always|deny），不要让用户输入其他替代命令
-- allow-once 仅限单次命令：如有其他命令需要审批，需重新请求
-- 审批时保留原始命令完整内容（包括 &&, ||, |, ; 等链接操作符或多行脚本），确保用户了解实际执行内容
-
-### 回复风格
-工具执行完成后，给用户的回复应该：
-- **结论先行**：先告诉用户任务是否成功、关键结果是什么
-- **保留必要信息**：文件路径、执行结果、关键输出
-- **避免过度描述**：除非用户明确要求，否则不要详细描述执行过程
-
-示例：
-✅ 正确："已创建文件 `{self.workspace}/test.py` 并执行成功。当前时间是 {current_time}"
-❌ 错误："我来帮您完成这个任务。首先我使用了 write 工具创建了一个 Python 文件，这个文件包含了..."
-
-### 安全准则
-- **无独立目标**：不追求自我保护、自我复制、资源获取或权力扩展；避免超出用户请求范围的长期计划
-- **安全优先**：如果指令冲突，暂停并询问；优先保障安全和人类监督
-- **不绕过防护**：不操纵或说服他人扩展权限、禁用安全措施
-- **不自我复制**：未经明确授权，不复制自身、修改系统提示、安全规则或工具策略""")
-
-        # === 3. Skills ===
-        parts.append(f"""## 技能 (Skills) - 必须遵守
-
-### 使用规则
-在回复用户之前，必须：
-1. **扫描** <available_skills> 中的所有条目及其描述
-2. **精确匹配**：如果某个 skill 的描述与任务完全匹配 → 使用 `read` 工具读取其 SKILL.md，然后按照说明执行
-3. **模糊匹配**：如果有多个 skill 可能适用 → 选择最具体的一个，读取后执行
-4. **无匹配**：如果没有 skill 适用 → 不读取任何 SKILL.md
-5. **严格限制**：禁止一次性读取多个 skill；必须先选择再读取
-6. **速率限制**：调用外部 API 时，优先批量写入，避免单条频繁调用；遇到 429 或 Retry-After 时遵守
-
-### Skill 选择原则（重要！）
-根据任务的**实际含义**选择，而不是看关键词：
-- **网络搜索**（网页/图片/视频/新闻/百科/信息查询）→ 选择描述中涉及"搜索"且与网络/网页/百科相关的 skill
-- **项目内搜索**（代码/文件/函数/配置）→ 选择描述中涉及"项目"或"代码"的 skill
-- **绝对不要**仅凭"搜索"两个字就选择，需要理解用户真正想搜索什么
-
-### 路径解析
-当 skill 文件中使用相对路径时，基于 skill 目录（SKILL.md 的父目录）解析，使用绝对路径调用工具。
-
-### 可用技能
 <available_skills>
-{skills_prompt}
+{context["skills_prompt"]}
 </available_skills>""")
 
-        # === 4. 记忆召回 ===
-        parts.append(f"""## 记忆召回 (Memory Recall)
-在回答任何关于以下内容的问题之前，**必须**执行：
-1. 使用 `memory_search` 搜索 MEMORY.md + memory/*.md
-2. 使用 `memory_get` 拉取需要的行
+        parts.append(f"""## Memory
+- 只有当用户明确提到“上次做过什么”“记住这个”“我的偏好”“之前的决定”之类的历史信息时，才参考 memory。
+- 普通当前任务不要先搜索或更新 memory。
+- 不要假设存在 memory 专用工具；只能使用当前真实可用的工具。
+- 如果用户明确要求记住信息，可在任务结束后再更新 `{context["memory_base"]}` 下相关文件。""")
 
-需要搜索的内容类型：
-- 以往的工作、决策
-- 日期、时间安排
-- 人物、偏好
-- 待办事项
+        parts.append(f"""## 工作目录
+当前工作目录：`{context["workspace"]}`
+除非用户明确指定，否则文件操作默认在这里完成。""")
 
-**引用格式**：当引用记忆内容时，标注来源 `<文件路径>#行号`，方便用户核实。
-
-**特殊情况**：如果 memory_search 返回 `disabled=true`，表示记忆功能不可用，应告知用户。""")
-
-        # === 5. 当前对话历史 ===
-        if conversation_history:
-            parts.append(f"""## 当前对话历史
-{conversation_history}""")
-
-        # === 6. 身份与上下文 ===
-        if soul_info:
-            parts.append(f"""## SOUL.md - 你的性格
-{soul_info}""")
-
-        if agent_info:
-            parts.append(f"""## AGENT.md - 你的身份
-{agent_info}""")
-
-        if user_info:
-            parts.append(f"""## USER.md - 关于你的主人
-{user_info}""")
-
-        # === 7. 长期记忆 ===
-        if memory_info:
-            parts.append(f"""## MEMORY.md - 长期记忆
-{memory_info}""")
-
-        # === 8. 工作目录 ===
-        parts.append(f"""## 工作目录 (Workspace)
-你的工作目录是：`{self.workspace}`
-
-**重要**：除非用户明确指示，否则所有文件操作都在此目录下进行。
-
-**注意**：不同 agent 的工作目录是隔离的，当前 agent 的工作目录是 `{self.workspace}`。""")
-
-        # === 9. 当前时间 ===
         parts.append(f"""## 当前时间
 时区：Asia/Shanghai
-当前时间：{current_time}""")
+当前时间：{context["current_time"]}""")
 
-        # === 10. 执行模式 ===
-        parts.append(f"""## 执行模式 - ReAct
-按以下步骤思考和执行：
+        if context["conversation_history"]:
+            parts.append(f"""## 当前对话历史
+{context["conversation_history"]}""")
 
-1. **Think (思考)**：分析任务，理解用户需求，规划解决步骤
-2. **Action (行动)**：调用合适的工具执行任务
-3. **Observe (观察)**：检查工具返回的结果
-4. **Reflect (反思)**：如结果不符合预期，调整方法重新尝试
+        if context["soul_info"]:
+            parts.append(f"""## SOUL.md
+{context["soul_info"]}""")
 
-**记住**：你可以通过工具帮助完成任务。需要执行命令时，使用 `exec` 工具。
+        if context["agent_info"]:
+            parts.append(f"""## AGENT.md
+{context["agent_info"]}""")
 
----
+        if context["user_info"]:
+            parts.append(f"""## USER.md
+{context["user_info"]}""")
 
-## 记忆管理 (重要!)
+        if context["memory_info"]:
+            parts.append(f"""## MEMORY.md
+{context["memory_info"]}""")
 
-### 你是一个有记忆的助手
-每次对话结束后，根据对话内容**主动决定**是否需要更新以下文件：
-
-### 何时更新文件
-
-| 文件 | 更新时机 | 示例 |
-|------|----------|------|
-| **USER.md** | 用户明确提供了关于他们自己的信息 | "我叫张三"、"我喜欢用 Python"、"我习惯用 tabs" |
-| **AGENT.md** | 用户给你命名或定义角色 | "你叫蟹酱吧"、"你是我的编程助手" |
-| **SOUL.md** | 用户表达了对你的性格/风格期望 | "希望你活泼一点"、"要更有耐心" |
-| **MEMORY.md** | 对话中有重要的事实、决定或需要长期记住的信息 | "这个项目的架构是..."、"下次继续这个任务" |
-
-### 更新步骤（必须按顺序）
-1. 先用 `read` 工具读取对应的 memory 文件（如 `{memory_base}/USER.md`）
-2. 分析现有内容，决定是修改、替换还是跳过
-3. 如果需要更新，使用 `write` 工具写入完整内容（保留原有重要信息，只修改/新增相关内容）
-
-### 不要更新的情况
-- 日常寒暄、闲聊
-- 用户只是问问题
-- 不确定的信息
-
-### 文件位置
-所有 memory 文件都在 `{memory_base}/` 目录下：
-- `{memory_base}/USER.md` - 用户信息
-- `{memory_base}/AGENT.md` - Agent 身份信息
-- `{memory_base}/SOUL.md` - Agent 性格设定
-- `{memory_base}/MEMORY.md` - 长期记忆
-
-### 重要提示
-**你有责任主动维护这些文件！** 如果对话中发现了值得记录的信息，在最终回复用户后，主动调用工具更新相应的文件。
-
----
-
-### 写下来 - 不要靠记忆！
-- **记忆是有限的** — 如果想记住什么，**写到文件里**
-- " mental notes"（心里记）不会在会话重启后保留，但文件会
-- 当用户说"记住这个" → 更新 `memory/YYYY-MM-DD.md` 或相关文件
-- 当学到教训 → 更新相关 memory 文件
-- 当犯错了 → 记录下来，防止重蹈覆辙
-- **文字 > 大脑** 📝
-
----
-
-### Heartbeat vs Cron 使用场景
-
-**使用 Heartbeat（心跳）的场景**：
-- 需要批量检查多个项目（收件箱 + 日历 + 通知一次处理）
-- 需要最近消息的对话上下文
-- 时间稍微漂移可以接受（约 30 分钟一次足够，不需要精确）
-- 想通过合并周期性检查减少 API 调用
-
-**使用 Cron 的场景**：
-- 需要精确时间（如"每周一上午 9:00 整"）
-- 任务需要与主会话历史隔离
-- 任务想使用不同的模型或思考深度
-- 一次性提醒（"20 分钟后提醒我"）
-- 输出应直接发送到渠道，不经过主会话
-
----
-
-### 红线（绝对不能触碰）
-- **绝不泄露私人数据**
-- **未经允许不执行破坏性命令**
-- 用 `trash` 代替 `rm`（可恢复 > 永远消失）
-- 有疑问就问
-
-### 内部操作 vs 外部操作
-
-**可以自由执行**：
-- 读取文件、探索、组织、学习
-- 搜索网络、查询信息
-- 在工作目录内工作
-
-**需要先询问**：
-- 发送邮件、推文、公开帖子
-- 任何离开本机的操作
-- 任何你不确定的事情""")
-
-        # === 11. 开始 ===
-        parts.append("""## 开始
-现在，请帮助用户完成他们的请求。""")
+        parts.append("""## 回复方式
+- 先给结果，再补充必要细节。
+- 除非用户要求，不要展开冗长过程说明。
+- 如果任务未完成，明确卡点和下一步最小动作。""")
 
         return "\n\n".join(parts)
 
@@ -1079,177 +1022,416 @@ class AgenticLoop:
         Returns:
             最终响应字符串
         """
-        # 初始化状态
-        self.state = LoopState(start_time=time.time())
-        self.messages = []
-        self.skills_loaded = {}
+        try:
+            # 初始化状态
+            self.state = LoopState(start_time=time.time())
+            self.messages = []
+            self.skills_loaded = {}
 
-        # 创建新 session 并记录用户消息
-        session_id = self.session_manager.create_session(user_message)
-        self.session_manager.add_user_message(user_message)
+            # 创建新 session 并记录用户消息
+            session_id = self.session_manager.create_session(user_message)
+            self.session_manager.add_user_message(user_message)
+            self.logger.info(
+                "Agent loop started | session=%s message=%s",
+                session_id,
+                self._truncate_for_log(user_message),
+            )
+            self._log_trace(
+                "RUN_START",
+                session=session_id,
+                user_input=summarize_for_log(user_message),
+                max_iterations=self.max_iterations,
+                max_tool_calls_per_iteration=self.max_tool_calls_per_iteration,
+            )
 
-        # 构建初始消息
-        system_prompt = self._build_system_prompt()
-        self.messages.append({"role": "system", "content": system_prompt})
-        self.messages.append({"role": "user", "content": user_message})
+            # 构建初始消息
+            system_prompt = self._build_system_prompt()
+            self.messages.append({"role": "system", "content": system_prompt})
+            self.messages.append({"role": "user", "content": user_message})
+            self.logger.info("System prompt built | length=%s", len(system_prompt))
+            self._log_trace("SYSTEM_PROMPT_READY", session=session_id, prompt_length=len(system_prompt))
 
-        # 获取工具列表
-        tools = self._format_tools()
+            # 获取工具列表
+            tools = self._format_tools()
+            self.logger.info("Tool catalog prepared | count=%s", len(tools))
+            self._log_trace("TOOL_CATALOG_READY", session=session_id, tool_count=len(tools))
 
-        # 记录开始时间
-        start_time = time.time()
-        # ReAct 循环
-        while self._should_continue(self.state.iteration):
-            self.state.iteration += 1
-
-            if show_progress:
-                yield Event(EventType.ITERATION_START, {
-                    "iteration": self.state.iteration,
-                    "max_iterations": self.max_iterations,
-                    "elapsed": time.time() - self.state.start_time,
-                    "tool_calls": self.state.tool_calls,
-                })
-
-            # 调用 LLM
-            if show_progress:
-                yield Event(EventType.THINKING_START, None)
-
-            # 用于收集流式内容
-            full_content = []
-            stream_queue: Queue[str] = Queue()
-            response_holder: dict[str, dict] = {}
-            error_holder: dict[str, Exception] = {}
-            done_event = threading.Event()
-
-            def _stream_callback(chunk: str):
-                full_content.append(chunk)
-                stream_queue.put(chunk)
-                if stream_callback:
-                    stream_callback(chunk)
-
-            def _llm_worker():
-                try:
-                    response_holder["response"] = self._call_llm(
-                        self.messages,
-                        tools=tools,
-                        stream_callback=_stream_callback
-                    )
-                except Exception as e:
-                    error_holder["error"] = e
-                finally:
-                    done_event.set()
-
-            worker = threading.Thread(target=_llm_worker, daemon=True)
-            worker.start()
-
-            # 实时转发流式片段
-            llm_wait_start = time.time()
-            last_thinking_progress_emit = 0.0
-            has_stream_output = False
-            while True:
-                try:
-                    chunk = stream_queue.get(timeout=0.05)
-                    has_stream_output = True
-                    yield Event(EventType.STREAM_CHUNK, chunk)
-                except Empty:
-                    pass
-
-                # 思考阶段心跳：长时间无输出时给前端进度感知
-                elapsed_thinking = time.time() - llm_wait_start
-                if (not has_stream_output) and (elapsed_thinking - last_thinking_progress_emit >= 2.0):
-                    last_thinking_progress_emit = elapsed_thinking
-                    yield Event(EventType.THINKING_PROGRESS, {
-                        "iteration": self.state.iteration,
-                        "elapsed": elapsed_thinking,
-                    })
-
-                if done_event.is_set() and stream_queue.empty():
-                    break
-
-            worker.join(timeout=0)
-
-            if error_holder:
-                raise error_holder["error"]
-
-            response = response_holder.get("response", {"type": "text", "content": ""})
-
-            # 如果有流式回调触发，yield STREAM_END
-            if full_content:
-                yield Event(EventType.STREAM_END, None)
-
-            # 解析工具调用
-            tool_calls = self._parse_tool_calls(response)
-
-            if not tool_calls:
-                # 没有工具调用，返回响应
-                content = response.get("content", "")
-
-                self.messages.append({"role": "assistant", "content": content})
-
-                # 记录到 session
-                self.session_manager.add_assistant_message(content=content)
-
-                yield Event(EventType.FINAL_RESPONSE, content)
-                return content
-
-            # 处理工具调用
-            for tool_call in tool_calls[:self.max_tool_calls_per_iteration]:
-                tool_name = tool_call.name
-                tool_args = tool_call.arguments
-
-                # 检查循环
-                is_loop, loop_count = self._detect_loop(tool_name, tool_args)
+            # 记录开始时间
+            start_time = time.time()
+            # ReAct 循环
+            while self._should_continue(self.state.iteration):
+                self.state.iteration += 1
+                self.logger.info(
+                    "Iteration started | iteration=%s tool_calls=%s messages=%s",
+                    self.state.iteration,
+                    self.state.tool_calls,
+                    len(self.messages),
+                )
+                self._log_trace(
+                    "ITERATION_START",
+                    session=session_id,
+                    iteration=self.state.iteration,
+                    total_tool_calls=self.state.tool_calls,
+                    message_count=len(self.messages),
+                )
 
                 if show_progress:
-                    yield Event(EventType.TOOL_CALL, {"name": tool_name, "args": tool_args})
-
-                if is_loop:
-                    if loop_count >= self.loop_max_threshold:
-                        if show_progress:
-                            self._print_loop_blocked(tool_name)
-
-                        # 阻止执行并返回错误消息
-                        error_msg = f"检测到循环调用: 工具 `{tool_name}` 被连续调用 {loop_count} 次。"
-                        self.messages.append({
-                            "role": "assistant",
-                            "content": error_msg
-                        })
-
-                        yield Event(EventType.ERROR, error_msg)
-                        yield Event(EventType.FINAL_RESPONSE, error_msg)
-                        return error_msg
-                    else:
-                        if show_progress:
-                            self._print_loop_warning(tool_name, loop_count)
-
-                # 检查是否需要加载 skill
-                skill_content = self._check_and_load_skill(tool_call=tool_call)
-                if skill_content and show_progress:
-                    print(f"\n{Colors.GREEN}已加载 skill 内容到上下文{Colors.RESET}")
-                    # 将 skill 内容作为系统消息添加到上下文
-                    self.messages.append({
-                        "role": "system",
-                        "content": f"## 加载的 Skill 内容\n{skill_content}"
+                    yield Event(EventType.ITERATION_START, {
+                        "iteration": self.state.iteration,
+                        "max_iterations": self.max_iterations,
+                        "elapsed": time.time() - self.state.start_time,
+                        "tool_calls": self.state.tool_calls,
                     })
 
-                # 参数校验：参数异常不执行工具，直接反馈给模型重试
-                arg_error = self._validate_tool_args(tool_name, tool_args)
-                if arg_error:
-                    if show_progress:
-                        yield Event(EventType.TOOL_RESULT, {
-                            "success": False,
-                            "content": "",
-                            "error": arg_error
+            # 调用 LLM
+                if show_progress:
+                    yield Event(EventType.THINKING_START, None)
+
+                # 用于收集流式内容
+                full_content = []
+                stream_queue: Queue[str] = Queue()
+                response_holder: dict[str, dict] = {}
+                error_holder: dict[str, Exception] = {}
+                done_event = threading.Event()
+
+                def _stream_callback(chunk: str):
+                    full_content.append(chunk)
+                    stream_queue.put(chunk)
+                    if stream_callback:
+                        stream_callback(chunk)
+
+                def _llm_worker():
+                    try:
+                        self._log_trace(
+                            "MODEL_REQUEST",
+                            session=session_id,
+                            iteration=self.state.iteration,
+                            message_count=len(self.messages),
+                            tool_count=len(tools),
+                            latest_user_input=summarize_for_log(user_message),
+                        )
+                        response_holder["response"] = self._call_llm(
+                            self.messages,
+                            tools=tools,
+                            stream_callback=_stream_callback
+                        )
+                    except Exception as e:
+                        error_holder["error"] = e
+                    finally:
+                        done_event.set()
+
+                worker = threading.Thread(target=_llm_worker, daemon=True)
+                worker.start()
+
+                # 实时转发流式片段
+                llm_wait_start = time.time()
+                last_thinking_progress_emit = 0.0
+                has_stream_output = False
+                while True:
+                    try:
+                        chunk = stream_queue.get(timeout=0.05)
+                        has_stream_output = True
+                        yield Event(EventType.STREAM_CHUNK, chunk)
+                    except Empty:
+                        pass
+
+                    # 思考阶段心跳：长时间无输出时给前端进度感知
+                    elapsed_thinking = time.time() - llm_wait_start
+                    if (not has_stream_output) and (elapsed_thinking - last_thinking_progress_emit >= 2.0):
+                        last_thinking_progress_emit = elapsed_thinking
+                        yield Event(EventType.THINKING_PROGRESS, {
+                            "iteration": self.state.iteration,
+                            "elapsed": elapsed_thinking,
                         })
 
+                    if done_event.is_set() and stream_queue.empty():
+                        break
+
+                worker.join(timeout=0)
+
+                if error_holder:
+                    raise error_holder["error"]
+
+                response = response_holder.get("response", {"type": "text", "content": ""})
+
+                # 如果有流式回调触发，yield STREAM_END
+                if full_content:
+                    yield Event(EventType.STREAM_END, None)
+
+                # 解析工具调用
+                tool_calls = self._parse_tool_calls(response)
+                self.logger.info(
+                    "LLM response parsed | type=%s content_length=%s tool_calls=%s",
+                    response.get("type"),
+                    len(response.get("content", "") or ""),
+                    len(tool_calls),
+                )
+                self._log_trace(
+                    "MODEL_DECISION",
+                    session=session_id,
+                    iteration=self.state.iteration,
+                    response_type=response.get("type"),
+                    selected_tools=",".join(tc.name for tc in tool_calls) if tool_calls else "none",
+                    response_preview=summarize_for_log(response.get("content", "")),
+                )
+
+                if not tool_calls:
+                    # 没有工具调用，返回响应
+                    content = response.get("content", "")
+
+                    self.messages.append({"role": "assistant", "content": content})
+
+                    # 记录到 session
+                    self.session_manager.add_assistant_message(content=content)
+                    self.logger.info("Loop finished with direct response | session=%s content_length=%s", session_id, len(content or ""))
+                    self._log_trace(
+                        "FINAL_RESPONSE",
+                        session=session_id,
+                        iteration=self.state.iteration,
+                        total_tool_calls=self.state.tool_calls,
+                        reply=summarize_for_log(content),
+                    )
+
+                    yield Event(EventType.FINAL_RESPONSE, content)
+                    return content
+
+                # 处理工具调用
+                for tool_call in tool_calls[:self.max_tool_calls_per_iteration]:
+                    tool_name = tool_call.name
+                    tool_args = tool_call.arguments
+                    self.logger.info(
+                        "Tool call received | tool=%s args=%s call_id=%s",
+                        tool_name,
+                        self._truncate_for_log(tool_args),
+                        tool_call.call_id,
+                    )
+                    self._log_trace(
+                        "TOOL_SELECTED",
+                        session=session_id,
+                        iteration=self.state.iteration,
+                        call_id=tool_call.call_id,
+                        tool=tool_name,
+                        args=summarize_for_log(tool_args),
+                    )
+
+                    # 检查循环
+                    is_loop, loop_count = self._detect_loop(tool_name, tool_args)
+
+                    if show_progress:
+                        yield Event(EventType.TOOL_CALL, {"name": tool_name, "args": tool_args})
+
+                    if is_loop:
+                        self.logger.warning("Loop suspicion detected | tool=%s count=%s", tool_name, loop_count)
+                        if loop_count >= self.loop_max_threshold:
+                            if show_progress:
+                                self._print_loop_blocked(tool_name)
+
+                            # 阻止执行并返回错误消息
+                            error_msg = f"检测到循环调用: 工具 `{tool_name}` 被连续调用 {loop_count} 次。"
+                            self.messages.append({
+                                "role": "assistant",
+                                "content": error_msg
+                            })
+                            self.logger.error("Loop blocked execution | tool=%s count=%s", tool_name, loop_count)
+                            self._log_trace(
+                                "TOOL_EXECUTION",
+                                level=logging.ERROR,
+                                session=session_id,
+                                iteration=self.state.iteration,
+                                call_id=tool_call.call_id,
+                                tool=tool_name,
+                                status="blocked_loop_detection",
+                                detail=error_msg,
+                            )
+
+                            yield Event(EventType.ERROR, error_msg)
+                            yield Event(EventType.FINAL_RESPONSE, error_msg)
+                            return error_msg
+                        else:
+                            if show_progress:
+                                self._print_loop_warning(tool_name, loop_count)
+
+                    # 检查是否需要加载 skill
+                    skill_content = self._check_and_load_skill(tool_call=tool_call)
+                    if skill_content:
+                        if show_progress:
+                            print(f"\n{Colors.GREEN}已加载 skill 内容到上下文{Colors.RESET}")
+                        # 将 skill 内容添加到上下文。消息角色的 provider 兼容性由
+                        # models/custom.py 的标准化逻辑统一处理。
+                        self.messages.append({
+                            "role": "system",
+                            "content": f"## 加载的 Skill 内容\n{skill_content}"
+                        })
+
+                    # 参数校验：参数异常不执行工具，直接反馈给模型重试
+                    arg_error = self._validate_tool_args(tool_name, tool_args)
+                    if arg_error:
+                        self.logger.warning("Tool argument validation failed | tool=%s error=%s", tool_name, arg_error)
+                        self._log_trace(
+                            "TOOL_EXECUTION",
+                            level=logging.WARNING,
+                            session=session_id,
+                            iteration=self.state.iteration,
+                            call_id=tool_call.call_id,
+                            tool=tool_name,
+                            status="invalid_arguments",
+                            detail=arg_error,
+                        )
+                        if show_progress:
+                            yield Event(EventType.TOOL_RESULT, {
+                                "success": False,
+                                "content": "",
+                                "error": arg_error
+                            })
+
+                        self.state.tool_calls += 1
+                        self.state.tool_history.append({
+                            "name": tool_name,
+                            "args": json.dumps(tool_args, sort_keys=True),
+                            "success": False,
+                            "timestamp": time.time(),
+                        })
+
+                        self.messages.append({
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [{
+                                "id": tool_call.call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": json.dumps(tool_args)
+                                }
+                            }]
+                        })
+
+                        self.session_manager.add_assistant_message(
+                            content=None,
+                            tool_calls=[{
+                                "id": tool_call.call_id,
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": tool_args
+                                }
+                            }]
+                        )
+
+                        self.messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.call_id,
+                            "content": arg_error
+                        })
+                        self.session_manager.add_tool_result(tool_call_id=tool_call.call_id, content=arg_error)
+                        continue
+
+                    # 执行工具（带心跳）
+                    # 注意：危险工具需要交互确认，保持同步执行避免 stdin 竞争
+                    tool_exec_started = time.time()
+                    if self.confirm_dangerous_tools and tool_name in self._dangerous_tools:
+                        success, content, error, cancel_task, discard = self._execute_tool(tool_name, tool_args)
+                    else:
+                        exec_holder: dict[str, Any] = {}
+                        exec_error_holder: dict[str, Exception] = {}
+                        exec_done = threading.Event()
+
+                        def _tool_worker():
+                            try:
+                                exec_holder["result"] = self._execute_tool(tool_name, tool_args)
+                            except Exception as e:
+                                exec_error_holder["error"] = e
+                            finally:
+                                exec_done.set()
+
+                        tool_start = time.time()
+                        last_progress_emit = 0.0
+                        tool_thread = threading.Thread(target=_tool_worker, daemon=True)
+                        tool_thread.start()
+
+                        while not exec_done.wait(timeout=0.1):
+                            elapsed_tool = time.time() - tool_start
+                            if elapsed_tool - last_progress_emit >= 1.5:
+                                last_progress_emit = elapsed_tool
+                                if show_progress:
+                                    yield Event(EventType.TOOL_PROGRESS, {
+                                        "name": tool_name,
+                                        "elapsed": elapsed_tool
+                                    })
+
+                        tool_thread.join(timeout=0)
+
+                        if exec_error_holder:
+                            raise exec_error_holder["error"]
+
+                        success, content, error, cancel_task, discard = exec_holder.get(
+                            "result",
+                            (False, "", "工具执行异常", False, False)
+                        )
+
+                    # 如果用户取消任务，直接结束
+                    if cancel_task:
+                        self.logger.warning("Loop cancelled by user during tool execution | tool=%s", tool_name)
+                        self._log_trace(
+                            "TOOL_EXECUTION",
+                            level=logging.WARNING,
+                            session=session_id,
+                            iteration=self.state.iteration,
+                            call_id=tool_call.call_id,
+                            tool=tool_name,
+                            status="cancelled_by_user",
+                            duration_ms=int((time.time() - tool_exec_started) * 1000),
+                        )
+                        yield Event(EventType.ERROR, "用户取消任务")
+                        yield Event(EventType.FINAL_RESPONSE, None)
+                        return None
+
+                    # 如果废弃当前 tool，让模型重新思考
+                    if discard:
+                        self.logger.info("Tool discarded for replanning | tool=%s", tool_name)
+                        self._log_trace(
+                            "TOOL_EXECUTION",
+                            session=session_id,
+                            iteration=self.state.iteration,
+                            call_id=tool_call.call_id,
+                            tool=tool_name,
+                            status="discarded_for_replanning",
+                            duration_ms=int((time.time() - tool_exec_started) * 1000),
+                        )
+                        if show_progress:
+                            print(f"{Colors.YELLOW}⚠ 已废弃当前工具，等待模型重新思考...{Colors.RESET}")
+                        # 不记录到历史，不添加 tool 结果，继续下一个 tool 或重新循环
+                        continue
+
+                    if show_progress:
+                        yield Event(EventType.TOOL_RESULT, {"success": success, "content": content, "error": error})
+                    self.logger.info(
+                        "Tool result recorded | tool=%s success=%s error=%s",
+                        tool_name,
+                        success,
+                        self._truncate_for_log(error),
+                    )
+                    self._log_trace(
+                        "TOOL_EXECUTION",
+                        level=logging.INFO if success else logging.WARNING,
+                        session=session_id,
+                        iteration=self.state.iteration,
+                        call_id=tool_call.call_id,
+                        tool=tool_name,
+                        status="success" if success else "failed",
+                        duration_ms=int((time.time() - tool_exec_started) * 1000),
+                        result_summary=summarize_tool_result(success, content=content, error=error),
+                    )
+
+                    # 记录到历史
                     self.state.tool_calls += 1
                     self.state.tool_history.append({
                         "name": tool_name,
                         "args": json.dumps(tool_args, sort_keys=True),
-                        "success": False,
+                        "success": success,
                         "timestamp": time.time(),
                     })
 
+                    # 添加到消息历史
+                    # 先添加 assistant 的 tool call
                     self.messages.append({
                         "role": "assistant",
                         "content": None,
@@ -1263,6 +1445,7 @@ class AgenticLoop:
                         }]
                     })
 
+                    # 记录 assistant 的 tool call 到 session
                     self.session_manager.add_assistant_message(
                         content=None,
                         tool_calls=[{
@@ -1274,137 +1457,59 @@ class AgenticLoop:
                         }]
                     )
 
+                    # 再添加 tool 结果
+                    result_content = content if success else (error or "执行失败")
                     self.messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.call_id,
-                        "content": arg_error
+                        "content": result_content
                     })
-                    self.session_manager.add_tool_result(tool_call_id=tool_call.call_id, content=arg_error)
-                    continue
 
-                # 执行工具（带心跳）
-                # 注意：危险工具需要交互确认，保持同步执行避免 stdin 竞争
-                if self.confirm_dangerous_tools and tool_name in self._dangerous_tools:
-                    success, content, error, cancel_task, discard = self._execute_tool(tool_name, tool_args)
-                else:
-                    exec_holder: dict[str, Any] = {}
-                    exec_error_holder: dict[str, Exception] = {}
-                    exec_done = threading.Event()
-
-                    def _tool_worker():
-                        try:
-                            exec_holder["result"] = self._execute_tool(tool_name, tool_args)
-                        except Exception as e:
-                            exec_error_holder["error"] = e
-                        finally:
-                            exec_done.set()
-
-                    tool_start = time.time()
-                    last_progress_emit = 0.0
-                    tool_thread = threading.Thread(target=_tool_worker, daemon=True)
-                    tool_thread.start()
-
-                    while not exec_done.wait(timeout=0.1):
-                        elapsed_tool = time.time() - tool_start
-                        if elapsed_tool - last_progress_emit >= 1.5:
-                            last_progress_emit = elapsed_tool
-                            if show_progress:
-                                yield Event(EventType.TOOL_PROGRESS, {
-                                    "name": tool_name,
-                                    "elapsed": elapsed_tool
-                                })
-
-                    tool_thread.join(timeout=0)
-
-                    if exec_error_holder:
-                        raise exec_error_holder["error"]
-
-                    success, content, error, cancel_task, discard = exec_holder.get(
-                        "result",
-                        (False, "", "工具执行异常", False, False)
+                    # 记录 tool 结果到 session
+                    self.session_manager.add_tool_result(tool_call_id=tool_call.call_id, content=result_content)
+                    self._log_trace(
+                        "ITERATION_END",
+                        session=session_id,
+                        iteration=self.state.iteration,
+                        total_tool_calls=self.state.tool_calls,
+                        last_tool=tool_name,
                     )
 
-                # 如果用户取消任务，直接结束
-                if cancel_task:
-                    yield Event(EventType.ERROR, "用户取消任务")
-                    yield Event(EventType.FINAL_RESPONSE, None)
-                    return None
+                    yield Event(EventType.ITERATION_END, {
+                        "iteration": self.state.iteration,
+                        "tool_calls": self.state.tool_calls,
+                    })
 
-                # 如果废弃当前 tool，让模型重新思考
-                if discard:
-                    if show_progress:
-                        print(f"{Colors.YELLOW}⚠ 已废弃当前工具，等待模型重新思考...{Colors.RESET}")
-                    # 不记录到历史，不添加 tool 结果，继续下一个 tool 或重新循环
-                    continue
+            # 达到最大迭代
+            elapsed = time.time() - start_time
 
-                if show_progress:
-                    yield Event(EventType.TOOL_RESULT, {"success": success, "content": content, "error": error})
+            if show_progress:
+                self._print_header(f"达到最大迭代 ({self.max_iterations})")
+                print(f"{Colors.YELLOW}总耗时: {elapsed:.1f}s, 工具调用: {self.state.tool_calls}{Colors.RESET}")
 
-                # 记录到历史
-                self.state.tool_calls += 1
-                self.state.tool_history.append({
-                    "name": tool_name,
-                    "args": json.dumps(tool_args, sort_keys=True),
-                    "success": success,
-                    "timestamp": time.time(),
-                })
+            final_response = ("我已尽最大努力处理您的请求，但尚未完成。"
+                    "您可以提供更多细节或重新描述您的问题。")
+            self.logger.warning(
+                "Loop reached max iterations | elapsed=%.2fs tool_calls=%s",
+                elapsed,
+                self.state.tool_calls,
+            )
+            self._log_trace(
+                "RUN_STOPPED",
+                level=logging.WARNING,
+                session=session_id,
+                reason="max_iterations_reached",
+                elapsed_ms=int(elapsed * 1000),
+                total_tool_calls=self.state.tool_calls,
+                reply=summarize_for_log(final_response),
+            )
 
-                # 添加到消息历史
-                # 先添加 assistant 的 tool call
-                self.messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": tool_call.call_id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_name,
-                            "arguments": json.dumps(tool_args)
-                        }
-                    }]
-                })
-
-                # 记录 assistant 的 tool call 到 session
-                self.session_manager.add_assistant_message(
-                    content=None,
-                    tool_calls=[{
-                        "id": tool_call.call_id,
-                        "function": {
-                            "name": tool_name,
-                            "arguments": tool_args
-                        }
-                    }]
-                )
-
-                # 再添加 tool 结果
-                result_content = content if success else (error or "执行失败")
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.call_id,
-                    "content": result_content
-                })
-
-                # 记录 tool 结果到 session
-                self.session_manager.add_tool_result(tool_call_id=tool_call.call_id, content=result_content)
-
-                yield Event(EventType.ITERATION_END, {
-                    "iteration": self.state.iteration,
-                    "tool_calls": self.state.tool_calls,
-                })
-
-        # 达到最大迭代
-        elapsed = time.time() - start_time
-
-        if show_progress:
-            self._print_header(f"达到最大迭代 ({self.max_iterations})")
-            print(f"{Colors.YELLOW}总耗时: {elapsed:.1f}s, 工具调用: {self.state.tool_calls}{Colors.RESET}")
-
-        final_response = ("我已尽最大努力处理您的请求，但尚未完成。"
-                "您可以提供更多细节或重新描述您的问题。")
-
-        yield Event(EventType.ERROR, "达到最大迭代")
-        yield Event(EventType.FINAL_RESPONSE, final_response)
-        return final_response
+            yield Event(EventType.ERROR, "达到最大迭代")
+            yield Event(EventType.FINAL_RESPONSE, final_response)
+            return final_response
+        except Exception:
+            self.logger.exception("Agent loop failed unexpectedly")
+            raise
 
 
 def create_agentic_loop(

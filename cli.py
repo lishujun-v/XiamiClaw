@@ -15,7 +15,7 @@ import sys
 import argparse
 import yaml
 import platform
-import textwrap
+import unicodedata
 from datetime import datetime
 
 # 设置 UTF-8 编码
@@ -47,15 +47,101 @@ def color(text: str, code: str) -> str:
     return f"\033[{code}m{text}\033[0m"
 
 
+def _char_display_width(ch: str) -> int:
+    """按终端显示宽度计算单个字符的占位。"""
+    if unicodedata.combining(ch):
+        return 0
+    if unicodedata.east_asian_width(ch) in ("W", "F"):
+        return 2
+    return 1
+
+
+def _display_width(text: str) -> int:
+    """计算字符串在终端中的显示宽度。"""
+    return sum(_char_display_width(ch) for ch in text)
+
+
+def _fit_display_width(text: str, width: int) -> str:
+    """截断字符串，使其显示宽度不超过目标宽度。"""
+    if width <= 0:
+        return ""
+
+    parts = []
+    current = 0
+    for ch in text:
+        ch_width = _char_display_width(ch)
+        if current + ch_width > width:
+            break
+        parts.append(ch)
+        current += ch_width
+    return "".join(parts)
+
+
+def _pad_display_width(text: str, width: int, align: str = "left") -> str:
+    """将字符串补齐到目标显示宽度。"""
+    fitted = _fit_display_width(text, width)
+    padding = max(0, width - _display_width(fitted))
+
+    if align == "center":
+        left = padding // 2
+        right = padding - left
+        return f"{' ' * left}{fitted}{' ' * right}"
+    if align == "right":
+        return f"{' ' * padding}{fitted}"
+    return f"{fitted}{' ' * padding}"
+
+
+def _wrap_display_width(text: str, width: int) -> list[str]:
+    """按终端显示宽度分行，避免中文内容把边框顶歪。"""
+    if width <= 0:
+        return [""]
+    if not text:
+        return [""]
+
+    lines = []
+    current = []
+    current_width = 0
+
+    for ch in text:
+        ch_width = _char_display_width(ch)
+        if current and current_width + ch_width > width:
+            lines.append("".join(current))
+            current = [ch]
+            current_width = ch_width
+            continue
+
+        current.append(ch)
+        current_width += ch_width
+
+    if current:
+        lines.append("".join(current))
+
+    return lines
+
+
+def _box_title(width: int, title: str) -> str:
+    """生成带标题的框线，避免输入框和回复框视觉混淆。"""
+    inner = max(0, width - 2)
+    label = f" {title} "
+    label = _fit_display_width(label, inner)
+    label_width = _display_width(label)
+    if label_width >= inner:
+        return label
+    left = (inner - label_width) // 2
+    right = inner - label_width - left
+    return f"{'─' * left}{label}{'─' * right}"
+
+
 # Unicode 框线字符
 def print_input_box(prompt=">", width=None):
     """打印输入框上线，用户输入后会打印下线"""
     if width is None:
         width = get_terminal_width()
 
-    # 使用 Unicode 框线字符
-    print(f"╭{'─' * (width - 2)}╮")
-    print(f"│ {prompt} ", end="")
+    print(color(f"╭{_box_title(width, '你的输入')}╮", "36"))
+    print(color("│", "36"), end="")
+    if prompt:
+        print(f" {prompt} ", end="")
 
 
 def create_llm_provider():
@@ -67,14 +153,20 @@ def create_llm_provider():
     return llm_provider
 
 
-def print_welcome(current_agent_name: str = None):
+def print_welcome(current_agent_name: str = None, workspace: str = None, max_iterations: int = None):
     """打印欢迎信息"""
-    print("=" * 60)
-    print("  输入消息开始对话")
-    print("  命令: /agent /skills /tools /prompt /new /clear /exit")
+    line = "=" * 60
+    print(color(line, "36"))
+    print(color("  会话已就绪，输入消息开始对话", "1;32"))
     if current_agent_name:
-        print(f"  当前 Agent: {current_agent_name}")
-    print("=" * 60)
+        parts = [f"Agent: {color(current_agent_name, '1;96')}"]
+        if workspace:
+            parts.append(f"Workspace: {color(workspace, '96')}")
+        if max_iterations is not None:
+            parts.append(f"最大迭代: {color(str(max_iterations), '1;96')}")
+        print("  " + " | ".join(parts))
+    print(color("  命令: /agent /skills /tools /prompt /new /clear /exit", "33"))
+    print(color(line, "36"))
 
 
 def print_home_banner():
@@ -90,12 +182,12 @@ def print_home_banner():
     bot = f"╰{'─' * inner}╯"
 
     print(color(top, "36"))
-    print(color(f"│{title.center(inner)}│", "1;36"))
-    print(color(f"│{subtitle.center(inner)}│", "36"))
+    print(color(f"│{_pad_display_width(title, inner, 'center')}│", "1;36"))
+    print(color(f"│{_pad_display_width(subtitle, inner, 'center')}│", "36"))
     print(color(mid, "36"))
-    print(color(f"│ {'欢迎回来，准备开始任务。'.ljust(inner - 1)}│", "37"))
-    print(color(f"│ {'常用命令: /agent  /skills  /tools  /new  /exit'.ljust(inner - 1)}│", "37"))
-    print(color(f"│ {('启动时间: ' + now).ljust(inner - 1)}│", "90"))
+    print(color(f"│ {_pad_display_width('欢迎回来，准备开始任务。', inner - 1)}│", "32"))
+    print(color(f"│ {_pad_display_width('输入 /agent 切换 Agent，输入 /exit 退出。', inner - 1)}│", "33"))
+    print(color(f"│ {_pad_display_width('启动时间: ' + now, inner - 1)}│", "90"))
     print(color(bot, "36"))
 
 
@@ -243,21 +335,16 @@ def print_response_box(content: str, width: int):
     inner_width = max(10, width - 4)
     lines = []
     for raw_line in normalized.split('\n'):
-        wrapped = textwrap.wrap(
-            raw_line,
-            width=inner_width,
-            replace_whitespace=False,
-            drop_whitespace=False,
-        )
+        wrapped = _wrap_display_width(raw_line, inner_width)
         if wrapped:
             lines.extend(wrapped)
         else:
             lines.append("")
 
-    print(f"╭{'─' * (width - 2)}╮")
+    print(color(f"╭{_box_title(width, '助手回复')}╮", "32"))
     for line in lines:
-        print(f"│ {line.ljust(inner_width)} │")
-    print(f"╰{'─' * (width - 2)}╯")
+        print(f"{color('│', '32')} {_pad_display_width(line, inner_width)} {color('│', '32')}")
+    print(color(f"╰{'─' * (width - 2)}╯", "32"))
 
 
 def _clear_inline_status(stream_state: dict):
@@ -265,6 +352,29 @@ def _clear_inline_status(stream_state: dict):
     if stream_state.get("inline_status"):
         print("\r\033[2K", end="", flush=True)
         stream_state["inline_status"] = False
+
+
+def _stream_chunk_has_visible_text(chunk: str) -> bool:
+    """判断流式 chunk 是否包含可见文本，避免空白 chunk 打开回复框。"""
+    if not isinstance(chunk, str):
+        return bool(chunk)
+    return bool(chunk.strip())
+
+
+def _ensure_response_box_open(stream_state: dict, width: int):
+    """按需打开回复框，并输出此前缓存的前导空白。"""
+    if stream_state["open"]:
+        return
+
+    print(color(f"╭{_box_title(width, '助手回复')}╮", "32"))
+    print(f"{color('│', '32')} ", end='', flush=True)
+    stream_state["open"] = True
+    stream_state["had_stream"] = True
+
+    pending_chunks = stream_state.get("pending_stream_chunks", [])
+    if pending_chunks:
+        print("".join(pending_chunks), end='', flush=True)
+        stream_state["pending_stream_chunks"] = []
 
 
 def handle_event(event, stream_state: dict, width: int):
@@ -318,18 +428,22 @@ def handle_event(event, stream_state: dict, width: int):
                 print(f"{color(error, '31')}")
     elif event.type == EventType.STREAM_CHUNK:
         _clear_inline_status(stream_state)
-        # 流式输出片段
+        chunk = event.data if isinstance(event.data, str) else str(event.data or "")
         if not stream_state["open"]:
-            print(f"╭{'─' * (width - 2)}╮")
-            print(f"│ ", end='', flush=True)
-            stream_state["open"] = True
-            stream_state["had_stream"] = True
-        print(event.data, end='', flush=True)
+            if _stream_chunk_has_visible_text(chunk):
+                _ensure_response_box_open(stream_state, width)
+            else:
+                stream_state.setdefault("pending_stream_chunks", []).append(chunk)
+                return
+        print(chunk, end='', flush=True)
     elif event.type == EventType.STREAM_END:
         _clear_inline_status(stream_state)
-        print()  # 换行
-        print(f"╰{'─' * (width - 2)}╯")
-        stream_state["open"] = False
+        if stream_state["open"]:
+            print()  # 换行
+            print(color(f"╰{'─' * (width - 2)}╯", "32"))
+            stream_state["open"] = False
+        else:
+            stream_state["pending_stream_chunks"] = []
     elif event.type == EventType.ITERATION_START:
         _clear_inline_status(stream_state)
         data = event.data or {}
@@ -358,28 +472,30 @@ def interactive_mode(agents: dict, current_agent_name: str, default_agent: str):
         default_agent: 默认 agent 名称
         stream_callback: 流式回调函数，用于实时打印 LLM 输出
     """
-    print_welcome(current_agent_name)
-    if current_agent_name in agents:
-        print(f"  最大迭代次数: {agents[current_agent_name].max_iterations}")
+    current_agent = agents.get(current_agent_name)
+    current_agent.logger.info("CLI entered interactive mode | agent=%s default_agent=%s", current_agent_name, default_agent)
+    print_welcome(
+        current_agent_name=current_agent_name,
+        workspace=getattr(current_agent, "workspace", None),
+        max_iterations=getattr(current_agent, "max_iterations", None),
+    )
 
     # 检查 readline 库
-    try:
-        import readline
-    except ImportError:
-        pass
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            import readline
+        except ImportError:
+            pass
 
     while True:
         try:
-            # 打印输入框上线
             width = get_terminal_width()
-            print(f"╭{'─' * (width - 2)}╮")
-            print(f"│ ", end="")
+            print_input_box(prompt="", width=width)
 
             # 用户输入
             user_input = input("> ").strip()
 
-            # 打印输入框下线
-            print(f"╰{'─' * (width - 2)}╯")
+            print(color(f"╰{'─' * (width - 2)}╯", "36"))
 
             if not user_input:
                 continue
@@ -401,6 +517,7 @@ def interactive_mode(agents: dict, current_agent_name: str, default_agent: str):
 
                     if choice in agents:
                         current_agent_name = choice
+                        agents[current_agent_name].logger.info("CLI switched current agent to %s", current_agent_name)
                         print(f"\n✓ 已切换到 Agent: {current_agent_name}")
                     continue
 
@@ -424,7 +541,12 @@ def interactive_mode(agents: dict, current_agent_name: str, default_agent: str):
 
                 if cmd == 'clear':
                     os.system('cls' if os.name == 'nt' else 'clear')
-                    print_welcome(current_agent_name)
+                    current_agent = agents.get(current_agent_name)
+                    print_welcome(
+                        current_agent_name=current_agent_name,
+                        workspace=getattr(current_agent, "workspace", None),
+                        max_iterations=getattr(current_agent, "max_iterations", None),
+                    )
                     continue
 
                 if cmd == 'prompt':
@@ -455,9 +577,10 @@ def interactive_mode(agents: dict, current_agent_name: str, default_agent: str):
 
             # 执行请求 - 使用当前选中的 agent
             current_agent = agents[current_agent_name]
+            current_agent.logger.info("CLI dispatching interactive message | length=%s", len(user_input))
 
             # 使用事件流方式执行
-            stream_state = {"open": False, "had_stream": False}
+            stream_state = {"open": False, "had_stream": False, "pending_stream_chunks": []}
             final_response = None
 
             for event in current_agent.run_stream(user_input):
@@ -467,14 +590,21 @@ def interactive_mode(agents: dict, current_agent_name: str, default_agent: str):
                     handle_event(event, stream_state, width)
 
             # 如果没有任何流式输出，使用 FINAL_RESPONSE 显示
-            # 使用 FINAL_RESPONSE 显示
             if not stream_state["had_stream"] and final_response is not None:
                 print_response_box(final_response, width)
+            elif not stream_state["had_stream"] and final_response is None:
+                print(color("本轮执行已结束，但没有返回可显示内容。", "33"))
 
         except KeyboardInterrupt:
+            current_agent = agents.get(current_agent_name)
+            if current_agent:
+                current_agent.logger.info("CLI interactive mode interrupted by user")
             print("\n\nGoodbye!")
             break
         except Exception as e:
+            current_agent = agents.get(current_agent_name)
+            if current_agent:
+                current_agent.logger.exception("CLI interactive mode error")
             print(f"\nError: {e}")
 
     return current_agent_name
@@ -547,7 +677,7 @@ def create_all_agents(confirm_dangerous_tools: bool = True, max_iterations: int 
     agents = {}
     default_agent = get_default_agent_name()
 
-    print(f"正在初始化 {len(agent_list)} 个 agents...")
+    print(color(f"初始化 agents: {len(agent_list)} 个", "36"))
 
     for agent_cfg in agent_list:
         name = agent_cfg.get('name', 'agent')
@@ -559,8 +689,9 @@ def create_all_agents(confirm_dangerous_tools: bool = True, max_iterations: int 
             agent_name=name,
         )
         agents[name] = agent
+        agent.logger.info("CLI created agent instance | workspace=%s", workspace)
 
-    print(f"已创建 {len(agents)} 个 agents")
+    print(color(f"agents 就绪: {len(agents)} 个", "32"))
     return agents, default_agent
 
 
@@ -597,15 +728,24 @@ def main():
         current_agent_name = default_agent
 
     current_agent = agents[current_agent_name]
+    current_agent.logger.info(
+        "CLI started | interactive=%s show_prompt=%s message_present=%s",
+        args.interactive or args.message is None,
+        args.show_prompt,
+        bool(args.message),
+    )
 
-    print(f"\n=== 当前 Agent: {current_agent_name} ===")
-    print(f"Workspace: {current_agent.workspace}")
-    print(f"最大迭代次数: {current_agent.max_iterations}")
+    if not (args.interactive or args.message is None):
+        print(color(f"\n当前 Agent: {current_agent_name}", "1;96"))
+        print(color(f"Workspace: {current_agent.workspace}", "96"))
+        print(color(f"最大迭代次数: {current_agent.max_iterations}", "36"))
 
     if args.show_prompt:
         print("\n=== System Prompt ===")
         print(current_agent.get_system_prompt())
         print("\n" + "=" * 60)
+        if not args.interactive and args.message is None:
+            return
 
     # 检查是否启用流式输出
     stream_callback = None
@@ -631,8 +771,9 @@ def main():
         interactive_mode(agents, current_agent_name, default_agent)
     else:
         # 单次执行 - 使用指定的 agent
+        current_agent.logger.info("CLI dispatching single message | length=%s", len(args.message or ""))
         width = get_terminal_width()
-        stream_state = {"open": False, "had_stream": False}
+        stream_state = {"open": False, "had_stream": False, "pending_stream_chunks": []}
         final_response = None
 
         for event in current_agent.run_stream(args.message):
@@ -644,6 +785,8 @@ def main():
         # 如果没有任何流式输出，使用 FINAL_RESPONSE 显示
         if not stream_state["had_stream"] and final_response is not None:
             print_response_box(final_response, width)
+        elif not stream_state["had_stream"] and final_response is None:
+            print(color("本轮执行已结束，但没有返回可显示内容。", "33"))
 
 
 if __name__ == "__main__":

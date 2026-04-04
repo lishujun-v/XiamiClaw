@@ -9,6 +9,7 @@ Memory Management Module
 
 import os
 import re
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -17,7 +18,7 @@ from typing import Optional
 class MemoryManager:
     """记忆管理器"""
 
-    def __init__(self, memory_dir: Optional[str] = None):
+    def __init__(self, memory_dir: Optional[str] = None, logger=None):
         """
         初始化记忆管理器
 
@@ -35,11 +36,13 @@ class MemoryManager:
         self.soul_file = self.memory_dir / "SOUL.md"
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.daily_dir = self.memory_dir / "daily"
+        self.logger = logger or logging.getLogger("xiamiclaw.memory")
 
     def _ensure_memory_dir(self):
         """确保 memory 目录存在并创建模板文件"""
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.daily_dir.mkdir(parents=True, exist_ok=True)
+        self.logger.debug("Ensured memory directory: %s", self.memory_dir)
 
         # 创建模板文件（如果不存在）
         self._create_template_if_not_exists(self.agent_file, self._get_agent_template())
@@ -51,6 +54,7 @@ class MemoryManager:
         """如果文件不存在，创建模板文件"""
         if not file_path.exists():
             file_path.write_text(template, encoding="utf-8")
+            self.logger.info("Created memory template file: %s", file_path)
 
     def _get_agent_template(self) -> str:
         """获取 AGENT.md 模板"""
@@ -276,6 +280,7 @@ class MemoryManager:
         content += f"- {timestamp}: {note}\n"
 
         daily_file.write_text(content, encoding="utf-8")
+        self.logger.info("Appended daily memory note: %s", daily_file)
 
     def append_longterm_memory(self, content: str, category: Optional[str] = None):
         """
@@ -314,6 +319,7 @@ class MemoryManager:
             mem_content += new_entry
 
         self.memory_file.write_text(mem_content, encoding="utf-8")
+        self.logger.info("Appended longterm memory to %s", self.memory_file)
 
     def update_memory_file(self, file_name: str, new_content: str, append: bool = False):
         """

@@ -6,7 +6,7 @@
 # ============================================
 
 # 当前使用的模型类型: deepseek / openai / anthropic / minimax / custom
-model_provider: custom
+model_provider: minimax
 
 # DeepSeek 配置
 deepseek:
@@ -16,6 +16,7 @@ deepseek:
   temperature: 0.7
   max_tokens: 4096
   timeout: 600
+  stream: true
 
 # OpenAI 配置 (如果你有 OpenAI API)
 openai:
@@ -25,6 +26,7 @@ openai:
   temperature: 0.7
   max_tokens: 4096
   timeout: 600
+  stream: true
 
 # Anthropic (Claude) 配置
 anthropic:
@@ -33,21 +35,23 @@ anthropic:
   temperature: 0.7
   max_tokens: 4096
   timeout: 600
+  stream: true
 
 # Minimax 配置
 minimax:
-  api_key: ""
+  api_key: "sk-cp-zn4PGHZT-OTC4jKZtHfuRsEFvOIFfr3Z6mWEaLIchYAijd1uASwyaPIDmncJ_S1-K0hWTJ1LZtu8qKqnY5p226t5X9NZv5qdF3Ak6FpFtZzeHWN4lxFggOA"
   base_url: "https://api.minimax.chat/v1"
   model: "MiniMax-M2.7"
   group_id: ""  # 团队ID，可选
   temperature: 0.7
   max_tokens: 4096
   timeout: 600
+  stream: true
 
 # 自定义 API (百应) 配置
 custom:
-  api_key: ""
-  model: ""  # 替换成自己的modi id
+  api_key: "sk-fc19155e-54de-475e-b259-5ea4ef8294ea_tool"
+  model: "216224dc-465d-48d7-9aa2-2c177d7c2405"  # 替换成自己的modi id
   base_url: "https://llm-model-api-test.baiying.com.cn"
   session_id: "1-SHARE_TITLE"
   temperature: 0.7
@@ -68,7 +72,16 @@ agent:
   verbose: true
 
   # System Prompt 文件路径
-  system_prompt_file: null  # null 表示使用默认
+  system_prompt_file: "prompts/fast_path_system_prompt.md"
+
+# ============================================
+# 日志配置
+# ============================================
+
+logging:
+  level: "INFO"
+  directory_name: "logs"
+  max_file_size_mb: 5
 
 # ============================================
 # 多 Agent 配置

@@ -5,9 +5,11 @@
 import os
 import sys
 import json
+import logging
 import importlib.util
 from typing import Any, Callable, Optional
 from dataclasses import dataclass, field
+from utils.logging_utils import format_trace_message, summarize_for_log, summarize_tool_result
 
 
 @dataclass
@@ -31,9 +33,10 @@ class ToolResult:
 class ToolRegistry:
     """工具注册中心"""
 
-    def __init__(self):
+    def __init__(self, logger=None):
         self._tools: dict[str, ToolDefinition] = {}
         self._executors: dict[str, Callable] = {}
+        self.logger = logger or logging.getLogger("xiamiclaw.tool_registry")
         self._register_builtin_tools()
 
     def _get_tools_dir(self) -> str:
@@ -78,9 +81,9 @@ class ToolRegistry:
                             # 使用模块的文件名作为工具名
                             tool_def.name = tool_name
                             self.register(tool_def, module.execute)
-                            print(f"Loaded tool: {tool_name}")
+                            self.logger.info("Loaded dynamic tool: %s", tool_name)
                 except Exception as e:
-                    print(f"Failed to load tool {tool_name}: {e}")
+                    self.logger.exception("Failed to load tool: %s", tool_name)
 
     def _register_builtin_tools(self):
         """注册内置工具"""
@@ -167,6 +170,7 @@ class ToolRegistry:
         """注册工具"""
         self._tools[definition.name] = definition
         self._executors[definition.name] = executor
+        self.logger.debug("Registered tool: %s", definition.name)
 
     def get_tool(self, name: str) -> Optional[ToolDefinition]:
         """获取工具定义"""
@@ -187,22 +191,57 @@ class ToolRegistry:
         """执行工具"""
         executor = self._executors.get(tool_name)
         if not executor:
+            self.logger.warning("Attempted to execute unknown tool: %s", tool_name)
             return ToolResult(
                 success=False,
                 error=f"Unknown tool: {tool_name}"
             )
 
         try:
+            self.logger.info(
+                "Executing tool: %s | args=%s",
+                tool_name,
+                json.dumps(args, ensure_ascii=False, default=str)[:500] if isinstance(args, dict) else str(args)[:500]
+            )
+            self.logger.info(
+                format_trace_message(
+                    "TOOL_DISPATCH",
+                    tool=tool_name,
+                    args=summarize_for_log(args),
+                )
+            )
             result = executor(args)
             # 如果返回的是 dict，转换为 ToolResult
             if isinstance(result, dict):
-                return ToolResult(
+                tool_result = ToolResult(
                     success=result.get("success", False),
                     content=result.get("content"),
                     error=result.get("error")
                 )
-            return result
+            else:
+                tool_result = result
+
+            self.logger.info(
+                "Tool finished: %s | success=%s | error=%s",
+                tool_name,
+                tool_result.success,
+                (tool_result.error or "")[:300]
+            )
+            self.logger.info(
+                format_trace_message(
+                    "TOOL_FINISH",
+                    tool=tool_name,
+                    status="success" if tool_result.success else "failed",
+                    result_summary=summarize_tool_result(
+                        tool_result.success,
+                        content=tool_result.content,
+                        error=tool_result.error,
+                    ),
+                )
+            )
+            return tool_result
         except Exception as e:
+            self.logger.exception("Tool execution error: %s", tool_name)
             return ToolResult(
                 success=False,
                 error=f"Tool execution error: {str(e)}"
@@ -229,6 +268,7 @@ class ToolRegistry:
         file_path = args.get("file_path", "")
         limit = args.get("limit")
         offset = args.get("offset")
+        self.logger.debug("Read file requested: path=%s limit=%s offset=%s", file_path, limit, offset)
 
         try:
             if not os.path.exists(file_path):
@@ -252,6 +292,7 @@ class ToolRegistry:
         """写入文件"""
         file_path = args.get("file_path", "")
         content = args.get("content", "")
+        self.logger.debug("Write file requested: path=%s content_length=%s", file_path, len(content))
 
         try:
             parent_dir = os.path.dirname(file_path)
@@ -275,6 +316,13 @@ class ToolRegistry:
         old_string = args.get("old_string", "")
         new_string = args.get("new_string", "")
         replace_all = args.get("replace_all", False)
+        self.logger.debug(
+            "Edit file requested: path=%s replace_all=%s old_length=%s new_length=%s",
+            file_path,
+            replace_all,
+            len(old_string),
+            len(new_string),
+        )
 
         try:
             if not os.path.exists(file_path):
@@ -311,6 +359,7 @@ class ToolRegistry:
         command = args.get("command", "")
         timeout = args.get("timeout", 300)
         background = args.get("background", False)
+        self.logger.debug("Exec requested: command=%s timeout=%s background=%s", command, timeout, background)
 
         try:
             if background:

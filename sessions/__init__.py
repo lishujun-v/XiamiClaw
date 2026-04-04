@@ -9,6 +9,7 @@ Session 管理模块
 
 import json
 import os
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -38,7 +39,7 @@ class SessionMetadata:
 class SessionManager:
     """Session 管理器"""
 
-    def __init__(self, sessions_dir: str = None):
+    def __init__(self, sessions_dir: str = None, logger=None):
         """
         初始化 Session 管理器
 
@@ -52,6 +53,7 @@ class SessionManager:
 
         self.sessions_dir = Path(sessions_dir)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        self.logger = logger or logging.getLogger("xiamiclaw.sessions")
 
         # 当前活跃的 session
         self.current_session_id: Optional[str] = None
@@ -74,6 +76,7 @@ class SessionManager:
         # 如果不是强制创建新 session，且已有活跃 session，则复用
         if not force_new and self.current_session_id and self.current_session_path:
             # 复用现有 session，直接返回 ID，让调用者决定是否添加消息
+            self.logger.info("Reusing existing session: %s", self.current_session_id)
             return self.current_session_id
 
         # 生成 session ID
@@ -97,6 +100,7 @@ class SessionManager:
         self.current_session_id = session_id
         self.current_session_path = session_file
         self.messages = []
+        self.logger.info("Created session: %s", session_id)
 
         return session_id
 
@@ -133,6 +137,7 @@ class SessionManager:
 
         # 持久化到文件
         self._persist_message(message)
+        self.logger.debug("Appended session message: role=%s session=%s", role, self.current_session_id)
 
     def add_user_message(self, content: str):
         """添加用户消息"""
@@ -195,7 +200,7 @@ class SessionManager:
                 for line in lines[1:]:
                     f.write(line)
         except:
-            pass
+            self.logger.exception("Failed to update session metadata: %s", self.current_session_path)
 
     def get_session_messages(self, session_id: str = None) -> list[dict]:
         """
@@ -231,7 +236,7 @@ class SessionManager:
                         continue
                     messages.append(msg)
         except:
-            pass
+            self.logger.exception("Failed to read session messages: %s", session_file)
 
         return messages
 
@@ -253,6 +258,7 @@ class SessionManager:
                         if metadata.get("type") == "session":
                             sessions.append(metadata)
             except:
+                self.logger.exception("Failed to list session file: %s", session_file)
                 continue
 
         # 按更新时间排序
@@ -270,6 +276,7 @@ class SessionManager:
         self.current_session_id = session_id
         self.current_session_path = session_file
         self.messages = self.get_session_messages(session_id)
+        self.logger.info("Loaded session: %s", session_id)
 
         return True
 

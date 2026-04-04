@@ -50,6 +50,12 @@ def get_cli_config() -> dict:
     return config.get('cli', {})
 
 
+def get_logging_config() -> dict:
+    """获取日志配置"""
+    config = load_config()
+    return config.get('logging', {})
+
+
 if __name__ == "__main__":
     # 测试配置加载
     print("当前配置:")
